@@ -100,6 +100,14 @@ class AI_PT_chat(bpy.types.Panel):
             row.progress(factor=agent.spinner_factor(), type='RING')
         row.label(text=wm.blender_ai_status or "Ready.")
 
+        # 4b. Live reasoning tail streaming from the model
+        if wm.blender_ai_busy and wm.blender_ai_live:
+            box = layout.box()
+            col = box.column(align=True)
+            col.label(text="Thinking (live):", icon='TEMP')
+            for chunk in _wrap_lines(wm.blender_ai_live)[-4:]:
+                col.label(text=chunk)
+
         # 5. Input (the Paste button reads the clipboard directly — the
         #    textbox widget itself misses Cmd/Ctrl+V on non-Latin layouts)
         layout.textbox(

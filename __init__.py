@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Blender AI",
     "author": "hicaru",
-    "version": (0, 1, 6),
+    "version": (0, 1, 7),
     "blender": (5, 2, 0),
     "location": "3D Viewport > Sidebar > AI",
     "description": "AI chat agent that builds 3D models through Blender tools",

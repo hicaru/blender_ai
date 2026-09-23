@@ -111,10 +111,19 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         description="Run run_python code without confirmation. Only enable if you trust the model",
         default=False,
     )
-    enable_thinking: bpy.props.BoolProperty(
-        name="Enable reasoning (thinking)",
-        description="Ask the model to reason before answering; its thinking shows as a collapsible block in the chat. Uses extra tokens",
-        default=True,
+    reasoning_effort: bpy.props.EnumProperty(
+        name="Reasoning effort",
+        description="How much the model reasons before answering. "
+                    "xhigh/max are capped on providers that don't support them",
+        items=(
+            ("off", "Off", "No reasoning — fastest and cheapest"),
+            ("low", "Low", "Light reasoning"),
+            ("medium", "Medium", "Balanced reasoning"),
+            ("high", "High", "Thorough reasoning"),
+            ("xhigh", "XHigh", "Very deep reasoning (OpenRouter; DeepSeek caps at high)"),
+            ("max", "Max", "Deepest reasoning the provider supports"),
+        ),
+        default="medium",
     )
     history_limit: bpy.props.IntProperty(
         name="History limit",
@@ -147,7 +156,7 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         default_model = providers.PROVIDERS[self.provider]["default_model"]
         layout.prop(self, "model", placeholder=default_model or "model id, e.g. openai/gpt-4o-mini")
         layout.prop(self, "temperature")
-        layout.prop(self, "enable_thinking")
+        layout.prop(self, "reasoning_effort")
         layout.prop(self, "auto_approve_code")
         layout.prop(self, "history_limit")
 

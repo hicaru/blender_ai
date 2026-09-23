@@ -74,7 +74,7 @@ def scenario_structural_loop(wm):
     calls = {"n": 0}
 
     def mock(provider_id, api_key, model, messages, tools=None,
-             temperature=0.4, timeout=90, thinking=False):
+             temperature=0.4, timeout=90, thinking=False, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             return mock_response(tool_calls=[
@@ -102,7 +102,7 @@ def scenario_code_gate(wm):
     calls = {"n": 0}
 
     def mock_gate(provider_id, api_key, model, messages, tools=None,
-                  temperature=0.4, timeout=90, thinking=False):
+                  temperature=0.4, timeout=90, thinking=False, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             return mock_response(tool_calls=[
@@ -151,7 +151,7 @@ def scenario_ask_user(wm):
     calls = {"n": 0}
 
     def mock_ask(provider_id, api_key, model, messages, tools=None,
-                 temperature=0.4, timeout=90, thinking=False):
+                 temperature=0.4, timeout=90, thinking=False, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             return mock_response(tool_calls=[
@@ -179,6 +179,7 @@ def scenario_ask_user(wm):
     check("ask fields cleared", not wm.blender_ai_ask_question)
     final = wm.blender_ai_messages[-1].content
     check("answer reached model", final == "You chose: round", final)
+    check("live reasoning cleared after settle", wm.blender_ai_live == "")
 
 
 def scenario_collapse(wm):
@@ -216,7 +217,7 @@ def scenario_reasoning(wm):
     # outbound request must not carry reasoning back to the provider
     captured = {}
     def spy(provider_id, api_key, model, messages, tools=None,
-            temperature=0.4, timeout=90, thinking=False):
+            temperature=0.4, timeout=90, thinking=False, **kwargs):
         captured["messages"] = messages
         return mock_response(content="done")
     providers.chat_completions = spy
@@ -323,7 +324,7 @@ def scenario_error(wm):
     print("- scenario: provider error surfaces as error message")
 
     def mock_fail(provider_id, api_key, model, messages, tools=None,
-                  temperature=0.4, timeout=90, thinking=False):
+                  temperature=0.4, timeout=90, thinking=False, **kwargs):
         raise RuntimeError("HTTP 500: simulated outage")
 
     providers.chat_completions = mock_fail
@@ -354,7 +355,7 @@ def main():
         provider="zai",
         api_key_zai="test-key", api_key_deepseek="", api_key_openrouter="",
         model="", temperature=0.4, auto_approve_code=False, history_limit=80,
-        enable_thinking=True,
+        reasoning_effort="medium",
         get_api_key=lambda: "test-key",
         get_model=lambda: "glm-4.6",
     )

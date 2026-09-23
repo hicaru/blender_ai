@@ -15,7 +15,7 @@ def _install_post(status_code=200, body=None):
     requests = providers.requests
     _CAPTURED.clear()
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(url, headers=None, json=None, timeout=None, stream=False):
         _CAPTURED.update(url=url, headers=headers, json=json, timeout=timeout)
         response = type("R", (), {})()
         response.status_code = status_code
@@ -165,6 +165,87 @@ class TestListModels(unittest.TestCase):
         self.assertEqual(_CAPTURED["json"]["thinking"], {"type": "disabled"})
         providers.chat_completions("openrouter", "k", "m", [], thinking=True)
         self.assertNotIn("thinking", _CAPTURED["json"])
+
+
+    def test_effort_mapping(self):
+        _install_post(body={"choices": [{"message": {"role": "assistant",
+                                                     "content": ""}}]})
+        cases = [
+            ("deepseek", "high", {"thinking": {"type": "enabled"},
+                                  "reasoning_effort": "high"}),
+            ("deepseek", "max", {"thinking": {"type": "enabled"},
+                                 "reasoning_effort": "high"}),  # capped
+            ("deepseek", "off", {"thinking": {"type": "disabled"}}),
+            ("openrouter", "xhigh", {"reasoning_effort": "xhigh"}),
+            ("openrouter", "max", {"reasoning_effort": "xhigh"}),  # capped
+            ("openrouter", "off", {"reasoning_effort": "none"}),
+            ("zai", "low", {"thinking": {"type": "enabled"}}),  # no levels
+            ("zai", "off", {"thinking": {"type": "disabled"}}),
+        ]
+        for provider, effort, expected in cases:
+            providers.chat_completions(provider, "k", "m", [],
+                                       reasoning_effort=effort)
+            for key, value in expected.items():
+                self.assertEqual(_CAPTURED["json"][key], value,
+                                 "%s/%s/%s" % (provider, effort, key))
+            # exactly the expected reasoning keys, nothing else
+            self.assertEqual(
+                {key for key in ("thinking", "reasoning_effort")
+                 if key in _CAPTURED["json"]},
+                set(expected),
+                "%s/%s" % (provider, effort))
+
+    def test_streaming_assembles_message(self):
+        def sse(obj):
+            return "data: " + _json.dumps(obj)
+
+        sse_lines = [
+            sse({"choices": [{"delta": {"role": "assistant",
+                                        "reasoning_content": "think"}}]}),
+            sse({"choices": [{"delta": {"reasoning_content": "ing"}}]}),
+            sse({"choices": [{"delta": {"content": "Hello"}}]}),
+            sse({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "c1", "function": {
+                    "name": "create_primitive", "arguments": ""}}]}}]}),
+            sse({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": "{\"kind\": "}}]}}]}),
+            sse({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": "\"cube\"}"}}]}}]}),
+            sse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            "data: [DONE]",
+        ]
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def iter_lines(self):
+                return iter(sse_lines)
+
+        requests = providers.requests
+        _CAPTURED.clear()
+
+        def fake_post(url, headers=None, json=None, timeout=None, stream=False):
+            _CAPTURED.update(url=url, json=json, stream=stream)
+            return FakeResponse()
+
+        requests.post = fake_post
+        deltas = []
+        result = providers.chat_completions(
+            "deepseek", "k", "deepseek-flash", [], stream=True,
+            on_delta=lambda kind, text: deltas.append((kind, text)))
+        message = result["message"]
+        self.assertEqual(message["content"], "Hello")
+        self.assertEqual(message["reasoning_content"], "thinking")
+        self.assertEqual(len(message["tool_calls"]), 1)
+        call = message["tool_calls"][0]
+        self.assertEqual(call["id"], "c1")
+        self.assertEqual(call["function"]["name"], "create_primitive")
+        self.assertEqual(_json.loads(call["function"]["arguments"]),
+                         {"kind": "cube"})
+        self.assertEqual(_CAPTURED["json"]["stream"], True)
+        self.assertIn(("reasoning", "ing"), deltas)
+        self.assertIn(("content", "Hello"), deltas)
 
 
 if __name__ == "__main__":

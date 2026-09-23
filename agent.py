@@ -35,6 +35,8 @@ _STATE = {
     "stop_requested": False,
     # pending tool call awaiting user resolution: {"tool_call": {...}, "kind": "code"|"ask"}
     "pending": None,
+    # live stream progress, updated from the worker: {"reasoning": int, "content": int, "tail": str}
+    "live": {},
 }
 
 
@@ -85,7 +87,7 @@ def _request_params():
         "temperature": prefs.temperature,
         "auto_approve_code": prefs.auto_approve_code,
         "history_limit": prefs.history_limit,
-        "enable_thinking": prefs.enable_thinking,
+        "reasoning_effort": prefs.reasoning_effort,
     }
 
 
@@ -171,6 +173,11 @@ def _set_busy(busy):
         _start_spinner()
     else:
         _stop_spinner()
+        _STATE["live"] = {}
+        try:
+            _wm().blender_ai_live = ""
+        except AttributeError:
+            pass
 
 
 def has_pending():
@@ -264,6 +271,13 @@ def _spawn(params):
 
 
 def _worker(params, snapshot, tools, stop_event):
+    def on_delta(kind, text):
+        # runs in the worker thread; dict ops are GIL-atomic
+        live = _STATE["live"]
+        live[kind] = live.get(kind, 0) + len(text)
+        if kind == "reasoning":
+            live["tail"] = (live.get("tail", "") + text)[-600:]
+
     try:
         result = providers.chat_completions(
             params["provider_id"],
@@ -272,12 +286,29 @@ def _worker(params, snapshot, tools, stop_event):
             snapshot,
             tools=tools,
             temperature=params["temperature"],
-            thinking=params["enable_thinking"],
+            reasoning_effort=params["reasoning_effort"],
+            stream=True,
+            on_delta=on_delta,
         )
         _STATE["result"] = result
     except Exception as exc:  # noqa: BLE001 — worker must never raise into the void
         if not stop_event.is_set():
             _STATE["result"] = {"error": str(exc)}
+
+
+def _update_live_status():
+    """Reflect streaming progress in the panel while the worker runs."""
+    live = _STATE.get("live") or {}
+    reasoning = live.get("reasoning", 0)
+    content = live.get("content", 0)
+    if reasoning:
+        _set_status("reasoning… (%d chars)" % reasoning)
+    elif content:
+        _set_status("writing… (%d chars)" % content)
+    try:
+        _wm().blender_ai_live = live.get("tail", "")
+    except AttributeError:
+        pass
 
 
 def _poll():
@@ -286,6 +317,7 @@ def _poll():
         if _STATE["stop_requested"]:
             thread.join(timeout=2.0)
         else:
+            _update_live_status()
             return 0.2
 
     result = _STATE["result"]
