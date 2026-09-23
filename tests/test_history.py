@@ -102,3 +102,63 @@ class TestFile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReconcile(unittest.TestCase):
+    """Protocol-validity repair: every tool_call gets a result, no orphans."""
+
+    def test_dangling_calls_get_synthetic_results(self):
+        msgs = [
+            history.message("user", content="go"),
+            history.message("assistant", content="",
+                            tool_calls=[tool_call("1", "run_python", "{}")]),
+        ]
+        out = history.reconcile(msgs)
+        self.assertEqual(out[-1]["role"], "tool")
+        self.assertEqual(out[-1]["tool_call_id"], "1")
+        self.assertIn("interrupted", out[-1]["content"])
+        # input must be untouched
+        self.assertEqual(len(msgs), 2)
+        self.assertEqual(len(out), 3)
+
+    def test_orphan_results_dropped(self):
+        msgs = [
+            history.message("tool", content="x", tool_call_id="9"),
+            history.message("user", content="hi"),
+        ]
+        self.assertEqual(history.reconcile(msgs),
+                         [history.message("user", content="hi")])
+
+    def test_duplicate_results_dropped(self):
+        msgs = [
+            history.message("assistant", content="",
+                            tool_calls=[tool_call("1", "run_python", "{}")]),
+            history.message("tool", content="a", tool_call_id="1"),
+            history.message("tool", content="dup", tool_call_id="1"),
+        ]
+        out = history.reconcile(msgs)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[1]["content"], "a")
+
+    def test_valid_history_passes_through(self):
+        msgs = [
+            history.message("user", content="go"),
+            history.message("assistant", content="",
+                            tool_calls=[tool_call("1", "create_primitive", "{}")]),
+            history.message("tool", content="ok", tool_call_id="1"),
+            history.message("assistant", content="done"),
+        ]
+        self.assertEqual(history.reconcile(msgs), msgs)
+
+    def test_consecutive_assistant_blocks_both_closed(self):
+        msgs = [
+            history.message("assistant", content="",
+                            tool_calls=[tool_call("1", "run_python", "{}")]),
+            history.message("assistant", content="",
+                            tool_calls=[tool_call("2", "run_python", "{}")]),
+        ]
+        out = history.reconcile(msgs)
+        self.assertEqual([m["role"] for m in out],
+                         ["assistant", "tool", "assistant", "tool"])
+        self.assertEqual([m["tool_call_id"] for m in out if m["role"] == "tool"],
+                         ["1", "2"])

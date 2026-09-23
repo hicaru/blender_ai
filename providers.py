@@ -18,10 +18,12 @@ this branch is intentionally not implemented.
 """
 
 import json
+import time
 
 import requests
 
-__all__ = ("PROVIDERS", "ProviderError", "chat_completions", "list_models")
+__all__ = ("PROVIDERS", "ProviderError", "ProviderCancelled",
+           "chat_completions", "list_models")
 
 
 PROVIDERS = {
@@ -45,6 +47,20 @@ PROVIDERS = {
 
 class ProviderError(RuntimeError):
     """Raised for any provider/network/request-shape failure."""
+
+
+class ProviderCancelled(ProviderError):
+    """Raised when the user stops the run while the stream is in flight."""
+
+
+def _close_response(resp):
+    """Best-effort close (fakes in tests may lack .close)."""
+    close = getattr(resp, "close", None)
+    if close is not None:
+        try:
+            close()
+        except Exception:  # noqa: BLE001 — cleanup must never mask the real error
+            pass
 
 
 def list_models(provider_id, api_key, timeout=20):
@@ -125,16 +141,21 @@ def _apply_reasoning(payload, provider_id, thinking, effort):
         payload["thinking"] = {"type": "disabled"}
 
 
-def _consume_stream(response, on_delta):
+def _consume_stream(response, on_delta, stop_event=None):
     """Read an OpenAI-style SSE chat stream and assemble the message.
 
     Recognizes ``reasoning_content`` (DeepSeek, Z.ai) and ``reasoning``
-    (OpenRouter) reasoning deltas plus incremental tool_calls.
+    (OpenRouter) reasoning deltas plus incremental tool_calls. A set
+    ``stop_event`` (user pressed Stop) raises :class:`ProviderCancelled`
+    immediately, closing the connection. Returns ``(message, usage)``.
     """
     content_parts = []
     reasoning_parts = []
     tool_calls = {}
+    usage = {}
     for raw in response.iter_lines():
+        if stop_event is not None and stop_event.is_set():
+            raise ProviderCancelled("stream stopped by user")
         if not raw:
             continue
         line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
@@ -148,6 +169,10 @@ def _consume_stream(response, on_delta):
             event = json.loads(data)
         except ValueError:
             continue
+        usage_chunk = event.get("usage")
+        if isinstance(usage_chunk, dict) and usage_chunk:
+            # final chunk, present because of stream_options.include_usage
+            usage = usage_chunk
         choices = event.get("choices") or []
         if not choices:
             continue
@@ -181,7 +206,7 @@ def _consume_stream(response, on_delta):
         message["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:
         message["tool_calls"] = [tool_calls[key] for key in sorted(tool_calls)]
-    return message
+    return message, usage
 
 
 def chat_completions(
@@ -197,6 +222,8 @@ def chat_completions(
     stream=False,
     on_delta=None,
     max_tokens=8192,
+    stop_event=None,
+    retries=2,
 ):
     """POST ``{base_url}/chat/completions`` and return a normalized dict.
 
@@ -208,7 +235,10 @@ def chat_completions(
     ``on_delta(kind, text)``) and the message is assembled from chunks;
     this keeps bytes flowing so long reasoning cannot hit the read
     timeout. ``reasoning_effort``: off, low, medium, high, xhigh, max —
-    mapped per provider (unsupported levels are capped).
+    mapped per provider (unsupported levels are capped). A set
+    ``stop_event`` (user pressed Stop) aborts the stream with
+    :class:`ProviderCancelled`; transient network errors and HTTP
+    429/5xx are retried up to ``retries`` times with linear backoff.
 
     Raises :class:`ProviderError` on any failure.
     """
@@ -241,30 +271,52 @@ def chat_completions(
     _apply_reasoning(payload, provider_id, thinking, reasoning_effort)
     if stream:
         payload["stream"] = True
+        # the final chunk then carries token usage
+        payload["stream_options"] = {"include_usage": True}
 
-    try:
-        response = requests.post(
-            url, headers=headers, json=payload, timeout=timeout,
-            stream=stream,
-        )
-    except requests.RequestException as exc:
-        raise ProviderError("Network error talking to %s: %s" % (provider["label"], exc))
+    attempt = 0
+    while True:
+        try:
+            response = requests.post(
+                url, headers=headers, json=payload, timeout=timeout,
+                stream=stream,
+            )
+        except requests.RequestException as exc:
+            if attempt < retries:
+                attempt += 1
+                time.sleep(1.5 * attempt)
+                continue
+            raise ProviderError(
+                "Network error talking to %s: %s" % (provider["label"], exc)
+            )
 
-    if response.status_code != 200:
-        raise ProviderError(
-            "%s returned HTTP %d: %s"
-            % (provider["label"], response.status_code, response.text[:300])
-        )
+        if response.status_code in (429, 500, 502, 503, 504) and attempt < retries:
+            # transient: retry with linear backoff before giving up
+            attempt += 1
+            _close_response(response)
+            time.sleep(1.5 * attempt)
+            continue
+
+        if response.status_code != 200:
+            _close_response(response)
+            raise ProviderError(
+                "%s returned HTTP %d: %s"
+                % (provider["label"], response.status_code, response.text[:300])
+            )
+        break
 
     try:
         if stream:
-            message = _consume_stream(response, on_delta)
-            return {"message": message, "usage": {}}
+            message, usage = _consume_stream(response, on_delta, stop_event)
+            return {"message": message, "usage": usage}
         data = response.json()
         message = data["choices"][0]["message"]
+        usage = data.get("usage", {})
     except ProviderError:
         raise
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise ProviderError("Unexpected response shape from %s: %s" % (provider["label"], exc))
+    finally:
+        _close_response(response)
 
-    return {"message": message, "usage": data.get("usage", {})}
+    return {"message": message, "usage": usage}

@@ -261,9 +261,11 @@ def _spawn(params):
 
     # Internal keys ("reasoning", "approval", "tool_name") must not go to
     # the provider — e.g. DeepSeek rejects reasoning_content on input.
+    # reconcile(): repair dangling tool_calls/results so a request can
+    # never go out in a protocol-invalid shape (pi-style invariant).
     snapshot = [
         {k: v for k, v in m.items() if k not in ("reasoning", "approval", "tool_name")}
-        for m in _request_messages(params)
+        for m in history.reconcile(_request_messages(params))
     ]
     stop_event = threading.Event()
     _STATE["stop_event"] = stop_event
@@ -303,6 +305,7 @@ def _worker(params, snapshot, tools, stop_event):
             reasoning_effort=params["reasoning_effort"],
             stream=True,
             on_delta=on_delta,
+            stop_event=stop_event,
         )
         _STATE["result"] = result
     except Exception as exc:  # noqa: BLE001 — worker must never raise into the void
@@ -411,6 +414,18 @@ def _run_tool_calls(tool_calls):
             ))
             continue
 
+        if _STATE["pending"] is not None:
+            # A previous call in this block is parked on user approval:
+            # every call still needs a result message, or the provider
+            # rejects the whole next request (unpaired tool_calls).
+            _append(history.message(
+                "tool",
+                content="SKIPPED: waiting for the user to resolve an "
+                        "earlier tool call; call it again if still needed.",
+                tool_name=name, tool_call_id=call.get("id", ""),
+            ))
+            continue
+
         _set_status("running tool: %s" % name)
         outcome = executor.dispatch(name, arguments)
 
@@ -461,8 +476,14 @@ def resolve_pending(kind, payload):
     if kind == "code":
         if payload == "approved":
             from . import executor  # lazy — executes on the main thread
-            arguments = json.loads(call["function"]["arguments"])
-            result = executor.execute_tool(name, arguments)
+            try:
+                arguments = json.loads(call["function"]["arguments"])
+            except (ValueError, KeyError, TypeError):
+                arguments = None
+            if arguments is None:
+                result = "ERROR: stored arguments were not valid JSON; nothing ran."
+            else:
+                result = executor.execute_tool(name, arguments)
             # mark the assistant message as approved
             for msg in reversed(_STATE["messages"]):
                 if msg.get("approval") == "pending":

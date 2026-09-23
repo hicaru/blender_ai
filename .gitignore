@@ -1,2 +1,5 @@
 __pycache__/
 *.zip
+.rlm/
+_work/
+

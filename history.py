@@ -14,7 +14,8 @@ A message is a dict with a subset of:
 
 import json
 
-__all__ = ("message", "append", "trim", "to_json", "from_json", "save", "load")
+__all__ = ("message", "append", "trim", "reconcile", "to_json", "from_json",
+           "save", "load")
 
 
 def message(role, content="", tool_calls=None, tool_name="", tool_call_id="", approval="", reasoning=""):
@@ -50,6 +51,52 @@ def trim(messages, limit):
     while trimmed and trimmed[0].get("role") == "tool":
         trimmed.pop(0)
     return trimmed
+
+
+_INTERRUPTED_RESULT = (
+    "ERROR: tool call was interrupted before it ran (crash or stop); "
+    "no result exists. Do not assume it had any effect."
+)
+
+
+def reconcile(messages):
+    """Return a protocol-valid copy of ``messages`` (input untouched).
+
+    Blender can crash, or a session can be saved while an assistant
+    ``tool_calls`` block is still open (an approval was parked) — the
+    stored history then holds calls without results. Providers reject
+    such requests, so dangling calls get a synthetic error result and
+    orphan results are dropped. Applied before every request and on
+    history restore.
+    """
+    out = []
+    open_ids = []  # tool_call_ids of the current block awaiting a result
+
+    def _close_block():
+        for call_id in open_ids:
+            out.append(message("tool", content=_INTERRUPTED_RESULT,
+                               tool_call_id=call_id))
+        del open_ids[:]
+
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            _close_block()
+            out.append(msg)
+            for call in msg["tool_calls"]:
+                if isinstance(call, dict) and call.get("id"):
+                    open_ids.append(call["id"])
+        elif role == "tool":
+            call_id = msg.get("tool_call_id")
+            if call_id and call_id in open_ids:
+                open_ids.remove(call_id)
+                out.append(msg)
+            # else: orphan or duplicate result — drop it
+        else:
+            _close_block()
+            out.append(msg)
+    _close_block()
+    return out
 
 
 def to_json(messages):

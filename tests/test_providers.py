@@ -250,3 +250,138 @@ class TestListModels(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResilience(unittest.TestCase):
+    """Retries, user-stop cancellation, stream usage capture (pi-style)."""
+
+    def _silent_sleep(self):
+        sleeps = []
+        real = providers.time.sleep
+        providers.time.sleep = lambda s: sleeps.append(s)
+        self.addCleanup(lambda: setattr(providers.time, "sleep", real))
+        return sleeps
+
+    def test_retry_on_503_then_success(self):
+        sleeps = self._silent_sleep()
+        requests = providers.requests
+        _CAPTURED.clear()
+        calls = []
+
+        class Busy:
+            status_code = 503
+            text = "unavailable"
+
+            def close(self):
+                calls.append("closed")
+
+        ok = type("OK", (), {})()
+        ok.status_code = 200
+        ok.text = ""
+        ok._body = {"choices": [{"message": {"role": "assistant",
+                                             "content": "hi"}}],
+                    "usage": {"total_tokens": 7}}
+        ok.json = lambda: ok._body
+
+        responses = [Busy(), Busy(), ok]
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            calls.append("post")
+            return responses.pop(0)
+
+        requests.post = fake_post
+        result = providers.chat_completions("deepseek", "k", "m", [],
+                                            retries=2)
+        self.assertEqual(result["message"]["content"], "hi")
+        self.assertEqual(result["usage"], {"total_tokens": 7})
+        self.assertEqual(calls.count("post"), 3)
+        self.assertEqual(calls.count("closed"), 2)  # aborted responses closed
+        self.assertEqual(sleeps, [1.5, 3.0])  # linear backoff
+
+    def test_retries_exhausted_raises(self):
+        self._silent_sleep()
+        requests = providers.requests
+        _CAPTURED.clear()
+        calls = []
+
+        class Busy:
+            status_code = 429
+            text = "rate limited"
+
+            def close(self):
+                pass
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            calls.append("post")
+            return Busy()
+
+        requests.post = fake_post
+        with self.assertRaises(providers.ProviderError):
+            providers.chat_completions("deepseek", "k", "m", [], retries=1)
+        self.assertEqual(len(calls), 2)  # initial + 1 retry
+
+    def test_stop_event_cancels_stream(self):
+        import threading
+
+        stop = threading.Event()
+
+        def sse(obj):
+            return "data: " + _json.dumps(obj)
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def iter_lines(self):
+                yield sse({"choices": [{"delta": {"content": "a"}}]})
+                stop.set()  # user pressed Stop mid-stream
+                yield sse({"choices": [{"delta": {"content": "b"}}]})
+
+        requests = providers.requests
+        _CAPTURED.clear()
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            return FakeResponse()
+
+        requests.post = fake_post
+        with self.assertRaises(providers.ProviderCancelled):
+            providers.chat_completions("deepseek", "k", "m", [],
+                                       stream=True, stop_event=stop)
+
+    def test_stream_usage_captured(self):
+        def sse(obj):
+            return "data: " + _json.dumps(obj)
+
+        sse_lines = [
+            sse({"choices": [{"delta": {"content": "Hey"}}]}),
+            sse({"usage": {"prompt_tokens": 3, "completion_tokens": 8,
+                           "total_tokens": 11}, "choices": []}),
+            "data: [DONE]",
+        ]
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def iter_lines(self):
+                return iter(sse_lines)
+
+        requests = providers.requests
+        _CAPTURED.clear()
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            _CAPTURED.update(json=json)
+            return FakeResponse()
+
+        requests.post = fake_post
+        result = providers.chat_completions("deepseek", "k", "m", [],
+                                            stream=True, on_delta=None)
+        self.assertEqual(result["message"]["content"], "Hey")
+        self.assertEqual(result["usage"]["total_tokens"], 11)
+        # usage must be requested explicitly, or the final chunk never comes
+        self.assertEqual(_CAPTURED["json"]["stream_options"],
+                         {"include_usage": True})
