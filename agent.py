@@ -37,6 +37,9 @@ _STATE = {
     "pending": None,
     # live stream progress, updated from the worker: {"reasoning": int, "content": int, "tail": str}
     "live": {},
+    # one automatic retry with lowered reasoning effort per user message
+    # when a thinking model spends the whole output budget on reasoning
+    "empty_retries": 0,
 }
 
 
@@ -224,6 +227,7 @@ def send_user_message(text):
     text = text.strip()
     if not text:
         return
+    _STATE["empty_retries"] = 0
     _append(history.message("user", content=text))
 
     try:
@@ -265,6 +269,7 @@ def _spawn(params):
     _STATE["stop_event"] = stop_event
     _STATE["stop_requested"] = False
     _STATE["result"] = None
+    _STATE["params"] = dict(params)
     # busy + live reset BEFORE the thread starts — a fast provider could
     # otherwise deliver deltas that the reset then wipes
     _set_busy(True)
@@ -357,10 +362,23 @@ def _apply_assistant_message(message):
     reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
     if not isinstance(reasoning, str):
         reasoning = json.dumps(reasoning, ensure_ascii=False)
+
     if not tool_calls and not content and reasoning:
+        # The thinking model spent its whole output budget on reasoning.
+        # One silent rescue per user message: retry with lowered effort
+        # before showing the user an explanation.
+        current = (_STATE.get("params") or {}).get("reasoning_effort", "")
+        if _STATE["empty_retries"] < 1 and current not in ("low", "off"):
+            _STATE["empty_retries"] += 1
+            params = dict(_STATE.get("params") or {})
+            params["reasoning_effort"] = "off" if current == "low" else "low"
+            _set_status("retrying with lower reasoning effort…")
+            _spawn(params)
+            return None
         content = ("(Empty answer: the output token budget was most likely "
                    "consumed entirely by reasoning. Ask the user to lower "
                    "the Reasoning effort in preferences, then continue.)")
+
     _append(history.message(
         "assistant", content=content, tool_calls=tool_calls or None,
         reasoning=reasoning,
@@ -502,6 +520,7 @@ def new_chat():
     stop()
     _STATE["messages"] = []
     _STATE["pending"] = None
+    _STATE["empty_retries"] = 0
     wm = _wm()
     wm.blender_ai_pending_code = ""
     wm.blender_ai_ask_question = ""

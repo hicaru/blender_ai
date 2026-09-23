@@ -200,9 +200,12 @@ def scenario_reasoning(wm):
     check("live tail persists after answer",
           "persisted live tail" in wm.blender_ai_live)
 
-    # reasoning-only response (budget eaten) -> guard hint, never blank
+    # reasoning-only response (budget eaten) -> one silent retry with
+    # lowered effort, then the hint — never a blank reply
+    efforts = []
     def mock_empty(provider_id, api_key, model, messages, tools=None,
                    temperature=0.4, timeout=90, thinking=False, **kwargs):
+        efforts.append(kwargs.get("reasoning_effort"))
         on_delta = kwargs.get("on_delta")
         if on_delta:
             on_delta("reasoning", "all budget spent")
@@ -213,9 +216,14 @@ def scenario_reasoning(wm):
     wm.blender_ai_input = "why empty"
     bpy.ops.blender_ai.send()
     check("empty settled", pump())
+    check("auto retry used lowered effort", "low" in efforts, efforts)
     last = wm.blender_ai_messages[-1]
     check("empty answer shows hint",
           last.content.startswith("(Empty answer"), last.content[:50])
+    check("empty turn not stored twice",
+          sum(1 for m in agent.messages()
+              if m.get("role") == "assistant"
+              and m.get("content", "").startswith("(Empty answer")) == 1)
     check("live tail refreshed by new request",
           "all budget spent" in wm.blender_ai_live)
     stored = [m for m in agent.messages() if m.get("role") == "assistant"]
