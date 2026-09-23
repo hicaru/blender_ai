@@ -1,0 +1,15 @@
+schema_version = "1.0.0"
+id = "blender_ai"
+version = "0.1.0"
+name = "Blender AI"
+tagline = "AI chat agent that builds 3D models inside Blender"
+maintainer = "hicaru"
+type = "add-on"
+blender_version_min = "5.2.0"
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+tags = ["3D View", "Modeling"]
+
+[permissions]
+network = "Sends chat requests to the configured LLM provider"

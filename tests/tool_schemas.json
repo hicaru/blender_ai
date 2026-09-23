@@ -1,0 +1,708 @@
+[
+ {
+  "type": "function",
+  "function": {
+   "name": "create_primitive",
+   "description": "Create a mesh primitive. kind is one of: plane, cube, circle, uv_sphere, ico_sphere, cylinder, cone, torus, grid, monkey, quad_sphere (all-quads sphere, good for sculpting). rotation is XYZ Euler in DEGREES. The new object is selected and active.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "circle",
+       "cone",
+       "cube",
+       "cylinder",
+       "grid",
+       "ico_sphere",
+       "monkey",
+       "plane",
+       "torus",
+       "uv_sphere",
+       "quad_sphere"
+      ]
+     },
+     "name": {
+      "type": "string",
+      "description": "Object name"
+     },
+     "location": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "World location XYZ"
+     },
+     "rotation": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Rotation XYZ in degrees"
+     },
+     "scale": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Scale XYZ"
+     }
+    },
+    "required": [
+     "kind"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "transform_object",
+   "description": "Set absolute location/rotation/scale of an object. rotation is XYZ Euler in DEGREES. Omitted axes stay unchanged (each parameter replaces the whole transform component).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string",
+      "description": "Object name"
+     },
+     "location": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "New world location XYZ"
+     },
+     "rotation": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "New rotation XYZ in degrees"
+     },
+     "scale": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "New scale XYZ"
+     }
+    },
+    "required": [
+     "object"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "rename_object",
+   "description": "Rename an object.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "old": {
+      "type": "string"
+     },
+     "new": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "old",
+     "new"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "duplicate_object",
+   "description": "Duplicate an object, optionally offsetting the copy by a vector.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "offset": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Offset added to the copy location"
+     }
+    },
+    "required": [
+     "object"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "delete_objects",
+   "description": "Delete objects by name.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1
+     }
+    },
+    "required": [
+     "objects"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "join_objects",
+   "description": "Join several mesh objects into the first one.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 2
+     }
+    },
+    "required": [
+     "objects"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "parent_objects",
+   "description": "Parent child to parent. keep_transform keeps the child world pose.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "child": {
+      "type": "string"
+     },
+     "parent": {
+      "type": "string"
+     },
+     "keep_transform": {
+      "type": "boolean",
+      "default": true
+     }
+    },
+    "required": [
+     "child",
+     "parent"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "create_collection",
+   "description": "Create a collection linked to the scene.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "assign_to_collection",
+   "description": "Move objects into a collection (removes them from their current ones).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1
+     },
+     "collection": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "objects",
+     "collection"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "set_shading",
+   "description": "Set smooth or flat shading on mesh objects.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1
+     },
+     "smooth": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "objects",
+     "smooth"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "batch_create",
+   "description": "Create many primitives in a grid, circle or random (deterministic) arrangement. spacing is the distance between neighbours.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "circle",
+       "cone",
+       "cube",
+       "cylinder",
+       "grid",
+       "ico_sphere",
+       "monkey",
+       "plane",
+       "torus",
+       "uv_sphere",
+       "quad_sphere"
+      ]
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+     },
+     "arrangement": {
+      "type": "string",
+      "enum": [
+       "grid",
+       "circle",
+       "random"
+      ]
+     },
+     "spacing": {
+      "type": "number"
+     },
+     "name_prefix": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "count"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "add_modifier",
+   "description": "Add a modifier to an object. type is one of: subdivision, bevel, mirror, solidify, array, boolean, remesh, smooth, shrinkwrap, weld. Pass settings as extra keyword arguments matching Blender modifier attributes (e.g. subdivision: levels, render_levels, viewport; bevel: width, segments, angle_limit; mirror: use_axis_x/y/z, mirror_object; array: count, relative_offset_displace; boolean: object, operation; weld: merge_threshold).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "type": {
+      "type": "string",
+      "enum": [
+       "array",
+       "bevel",
+       "boolean",
+       "mirror",
+       "remesh",
+       "shrinkwrap",
+       "smooth",
+       "solidify",
+       "subdivision",
+       "weld"
+      ]
+     }
+    },
+    "required": [
+     "object",
+     "type"
+    ],
+    "additionalProperties": true
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "set_modifier_params",
+   "description": "Change parameters of an existing modifier.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "modifier": {
+      "type": "string",
+      "description": "Modifier name"
+     },
+     "params": {
+      "type": "object",
+      "description": "Attribute -> value map"
+     }
+    },
+    "required": [
+     "object",
+     "modifier",
+     "params"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "remove_modifier",
+   "description": "Remove a modifier from an object.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "modifier": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "object",
+     "modifier"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "apply_modifier",
+   "description": "Apply (bake) a modifier into the mesh. Object becomes active automatically.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "modifier": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "object",
+     "modifier"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list_modifiers",
+   "description": "List an object's modifiers with their parameters (JSON).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "object"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "create_material",
+   "description": "Create a material with a Principled BSDF (reuses an existing material with the same name). base_color_rgba is [r,g,b,a] in 0..1.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "base_color_rgba": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 4
+     },
+     "metallic": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "roughness": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "emission_strength": {
+      "type": "number",
+      "minimum": 0
+     }
+    },
+    "required": [
+     "name"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "set_material_params",
+   "description": "Set Principled BSDF inputs on a material. Keys are socket names (Base Color, Metallic, Roughness, Emission Strength, ...).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "material": {
+      "type": "string"
+     },
+     "params": {
+      "type": "object",
+      "description": "Socket name -> value"
+     }
+    },
+    "required": [
+     "material",
+     "params"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "assign_material",
+   "description": "Assign a material to an object (appends a new slot, or uses the given slot index).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "material": {
+      "type": "string"
+     },
+     "slot": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "object",
+     "material"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list_materials",
+   "description": "List material slot names of an object (JSON array).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "object"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "uv_unwrap",
+   "description": "Unwrap UVs of a mesh object. method: smart (default, Smart UV Project), angle (seam/angle based unwrap) or cube (cube projection). angle_limit in degrees, island_margin in world units.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "method": {
+      "type": "string",
+      "enum": [
+       "smart",
+       "angle",
+       "cube"
+      ]
+     },
+     "angle_limit": {
+      "type": "number",
+      "description": "Degrees (smart/angle)"
+     },
+     "island_margin": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "object"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "sculpt_setup",
+   "description": "Prepare a mesh object for sculpting: switches to Sculpt Mode and optionally enables dynamic topology (enable_dyntopo + detail_size), voxel-remeshes the mesh (voxel_remesh + voxel_size) or adds a Multires modifier (multires_levels).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "enable_dyntopo": {
+      "type": "boolean"
+     },
+     "detail_size": {
+      "type": "number",
+      "description": "Dyntopo detail size"
+     },
+     "voxel_remesh": {
+      "type": "boolean"
+     },
+     "voxel_size": {
+      "type": "number"
+     },
+     "multires_levels": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+     }
+    },
+    "required": [
+     "object"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "get_scene_state",
+   "description": "Inspect the current scene: objects (names, types, locations, vertex counts, modifiers, materials), selection, active object, mode and unit scale. Call this first when the request depends on scene context.",
+   "parameters": {
+    "type": "object",
+    "properties": {}
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "ask_user",
+   "description": "Ask the user a clarifying question and wait for their answer. Use when a requirement is ambiguous instead of guessing. Provide 2-4 concrete options when possible; allow_free_text lets the user type a custom answer.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "question": {
+      "type": "string"
+     },
+     "options": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "allow_free_text": {
+      "type": "boolean",
+      "default": true
+     }
+    },
+    "required": [
+     "question"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "run_python",
+   "description": "Run arbitrary bpy Python code for anything the structural tools cannot do. Keep the code short and readable; print useful results. Runs on the main thread ONLY after the user approves it in the panel.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "code": {
+      "type": "string",
+      "description": "Python source using bpy/bmesh/mathutils"
+     }
+    },
+    "required": [
+     "code"
+    ]
+   }
+  }
+ }
+]

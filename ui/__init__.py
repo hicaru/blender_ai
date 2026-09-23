@@ -1,0 +1,60 @@
+"""UI package: WindowManager properties shared by the panel and operators."""
+
+import bpy
+
+from . import panel
+
+
+class AI_Message(bpy.types.PropertyGroup):
+    """Render copy of one history message (synced from agent state)."""
+
+    role: bpy.props.StringProperty()  # user | assistant | tool | error
+    content: bpy.props.StringProperty()
+    tool_name: bpy.props.StringProperty()
+    approval: bpy.props.StringProperty()  # "" | pending | ok | rejected
+
+
+_WM_PROPS = (
+    "blender_ai_messages",
+    "blender_ai_input",
+    "blender_ai_busy",
+    "blender_ai_status",
+    "blender_ai_pending_code",
+    "blender_ai_ask_question",
+    "blender_ai_ask_options",
+    "blender_ai_ask_answer",
+)
+
+
+def register():
+    panel.register()
+    bpy.utils.register_class(AI_Message)
+    wm = bpy.types.WindowManager
+    wm.blender_ai_messages = bpy.props.CollectionProperty(type=AI_Message)
+    wm.blender_ai_input = bpy.props.StringProperty(
+        name="Input", maxlen=4000,
+    )
+    wm.blender_ai_busy = bpy.props.BoolProperty(default=False)
+    wm.blender_ai_status = bpy.props.StringProperty(default="Ready.")
+    wm.blender_ai_pending_code = bpy.props.StringProperty(
+        name="Proposed code",
+    )
+    wm.blender_ai_ask_question = bpy.props.StringProperty(
+        name="Question",
+    )
+    wm.blender_ai_ask_options = bpy.props.StringProperty(
+        name="Options",
+        description="JSON list of answer options suggested by the agent",
+    )
+    wm.blender_ai_ask_answer = bpy.props.StringProperty(
+        name="Answer", maxlen=2000,
+    )
+
+
+def unregister():
+    wm = bpy.types.WindowManager
+    for name in _WM_PROPS:
+        if hasattr(wm, name):
+            delattr(wm, name)
+    bpy.utils.unregister_class(AI_Message)
+    panel.unregister()

@@ -1,0 +1,411 @@
+"""Agent loop: worker-thread + timer polling, executed on the main thread.
+
+Official Blender threading rule: background threads are only safe when the
+main thread blocks on join(), or when results are applied back on the main
+thread. Pattern used here (docs.blender.org/api/5.2/info_gotchas_threading.html):
+
+- UI thread: ``send_user_message`` snapshots prefs/history, spawns ONE worker
+  thread that only runs ``providers.chat_completions`` (no bpy access).
+- ``bpy.app.timers.register(_poll)`` polls on the main thread every 0.2 s;
+  when the worker finished, the result is applied here: assistant content is
+  stored, tool_calls are dispatched on the main thread, tool results are fed
+  back as ``role="tool"`` messages and a new worker is spawned until the
+  model returns a final answer without tool_calls.
+- The worker is always joined (2 s timeout) in ``stop()``, which is called by
+  the Stop operator and by ``unregister()``. At most one worker exists.
+"""
+
+import json
+import threading
+from pathlib import Path
+
+import bpy
+from bpy.app.handlers import persistent
+
+from . import history, providers
+
+PACKAGE = __package__
+
+# Single agent state. ``messages`` is the source of truth (list[dict]);
+# the WindowManager collection is a render copy kept in sync.
+_STATE = {
+    "messages": [],
+    "thread": None,
+    "stop_event": None,
+    "result": None,
+    "stop_requested": False,
+    # pending tool call awaiting user resolution: {"tool_call": {...}, "kind": "code"|"ask"}
+    "pending": None,
+}
+
+
+# --------------------------------------------------------------------------- paths
+
+def chat_file():
+    """History file. Official per-extension user dir when installed as an
+    extension (``__package__`` = ``bl_ext.<repo>.<id>``); a temp dir fallback
+    when imported from sources (smoke tests, development)."""
+    try:
+        base = Path(bpy.utils.extension_path_user(package=PACKAGE))
+    except ValueError:
+        import tempfile
+        base = Path(tempfile.gettempdir()) / "blender_ai"
+    return base / "chat.json"
+
+
+# --------------------------------------------------------------------------- prefs
+
+def _prefs():
+    addon = bpy.context.preferences.addons.get(PACKAGE)
+    return addon.preferences if addon else None
+
+
+def _request_params():
+    """Snapshot provider settings on the main thread (no bpy in the worker)."""
+    prefs = _prefs()
+    if prefs is None:
+        raise providers.ProviderError("Add-on preferences not found.")
+    return {
+        "provider_id": prefs.provider,
+        "api_key": prefs.get_api_key(),
+        "model": prefs.get_model(),
+        "temperature": prefs.temperature,
+        "auto_approve_code": prefs.auto_approve_code,
+        "history_limit": prefs.history_limit,
+    }
+
+
+# --------------------------------------------------------------------------- UI sync
+
+def _wm():
+    return bpy.context.window_manager
+
+
+def sync_ui():
+    wm = _wm()
+    col = wm.blender_ai_messages
+    col.clear()
+    for msg in _STATE["messages"]:
+        item = col.add()
+        item.role = msg.get("role", "")
+        item.content = msg.get("content", "")
+        item.tool_name = msg.get("tool_name", "")
+        item.approval = msg.get("approval", "")
+
+
+def _set_status(text):
+    _wm().blender_ai_status = text
+
+
+def _set_busy(busy):
+    _wm().blender_ai_busy = busy
+
+
+def has_pending():
+    return _STATE["pending"] is not None
+
+
+def is_busy():
+    return _wm().blender_ai_busy
+
+
+# --------------------------------------------------------------------------- history
+
+def messages():
+    return _STATE["messages"]
+
+
+def _append(msg):
+    history.append(_STATE["messages"], msg)
+    sync_ui()
+    try:
+        history.save(_STATE["messages"], chat_file())
+    except OSError:
+        pass
+
+
+def restore_history():
+    _STATE["messages"] = history.load(chat_file())
+    sync_ui()
+
+
+@persistent
+def _on_load_post(_scene, _depsgraph):
+    restore_history()
+
+
+# --------------------------------------------------------------------------- agent loop
+
+def send_user_message(text):
+    if is_busy() or has_pending():
+        return
+    text = text.strip()
+    if not text:
+        return
+    _append(history.message("user", content=text))
+
+    try:
+        params = _request_params()
+    except providers.ProviderError as exc:
+        _append(history.message("error", content=str(exc)))
+        return
+
+    if not bpy.app.online_access:
+        _append(history.message(
+            "error",
+            content="Blender's online access is disabled. "
+                    "Allow online access in Preferences → Save & Load → Online Access.",
+        ))
+        return
+
+    _set_status("thinking…")
+    _spawn(params)
+
+
+def _request_messages(params):
+    from .prompts import SYSTEM_PROMPT  # lazy: prompts may not exist yet
+
+    req = [history.message("system", content=SYSTEM_PROMPT)]
+    req += history.trim(_STATE["messages"], params["history_limit"])
+    return req
+
+
+def _spawn(params):
+    from .executor import tools_schema  # lazy: executor may not exist yet
+
+    snapshot = [dict(m) for m in _request_messages(params)]
+    stop_event = threading.Event()
+    _STATE["stop_event"] = stop_event
+    _STATE["stop_requested"] = False
+    _STATE["result"] = None
+    thread = threading.Thread(
+        target=_worker,
+        args=(params, snapshot, tools_schema(), stop_event),
+        daemon=True,
+    )
+    _STATE["thread"] = thread
+    thread.start()
+    _set_busy(True)
+    if not bpy.app.timers.is_registered(_poll):
+        bpy.app.timers.register(_poll, first_interval=0.2)
+
+
+def _worker(params, snapshot, tools, stop_event):
+    try:
+        result = providers.chat_completions(
+            params["provider_id"],
+            params["api_key"],
+            params["model"],
+            snapshot,
+            tools=tools,
+            temperature=params["temperature"],
+        )
+        _STATE["result"] = result
+    except Exception as exc:  # noqa: BLE001 — worker must never raise into the void
+        if not stop_event.is_set():
+            _STATE["result"] = {"error": str(exc)}
+
+
+def _poll():
+    thread = _STATE["thread"]
+    if thread is not None and thread.is_alive():
+        if _STATE["stop_requested"]:
+            thread.join(timeout=2.0)
+        else:
+            return 0.2
+
+    result = _STATE["result"]
+    _STATE["result"] = None
+    _STATE["thread"] = None
+
+    if _STATE["stop_requested"]:
+        _set_busy(False)
+        _set_status("Stopped.")
+        return None
+
+    if result is None:
+        _set_busy(False)
+        return None
+
+    if "error" in result:
+        _append(history.message("error", content=result["error"]))
+        _set_busy(False)
+        _set_status("Error.")
+        return None
+
+    return _apply_assistant_message(result.get("message", {}))
+
+
+def _apply_assistant_message(message):
+    tool_calls = message.get("tool_calls") or []
+    content = message.get("content") or ""
+    _append(history.message("assistant", content=content, tool_calls=tool_calls or None))
+
+    if not tool_calls:
+        _set_busy(False)
+        _set_status("Ready.")
+        return None
+
+    return _run_tool_calls(tool_calls)
+
+
+def _run_tool_calls(tool_calls):
+    from . import executor  # lazy
+
+    for call in tool_calls:
+        function = call.get("function", {})
+        name = function.get("name", "")
+        raw = function.get("arguments", "{}")
+        try:
+            arguments = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+        except ValueError:
+            arguments = None
+
+        if arguments is None:
+            _append(history.message(
+                "tool", content="ERROR: invalid JSON arguments",
+                tool_name=name, tool_call_id=call.get("id", ""),
+            ))
+            continue
+
+        _set_status("running tool: %s" % name)
+        outcome = executor.dispatch(name, arguments)
+
+        if outcome.get("pending"):
+            # run_python awaiting user approval (or ask_user awaiting
+            # answer): park the call; the loop resumes from the
+            # Approve/Reject/Answer operators. No tool result is appended
+            # yet — the real result arrives on resolution.
+            kind = outcome.get("kind", "ask")
+            _STATE["pending"] = {"tool_call": call, "kind": kind}
+            if kind == "code":
+                assistant = _STATE["messages"][-1]
+                if assistant.get("role") == "assistant":
+                    assistant["approval"] = "pending"
+                    sync_ui()
+                    try:
+                        history.save(_STATE["messages"], chat_file())
+                    except OSError:
+                        pass
+            _set_busy(False)
+            _set_status("waiting for approval" if kind == "code" else "waiting for your answer")
+            return None
+
+        _append(history.message(
+            "tool", content=outcome.get("result", ""),
+            tool_name=name, tool_call_id=call.get("id", ""),
+        ))
+
+    # All tool calls resolved — continue the loop with a new worker request.
+    try:
+        params = _request_params()
+    except providers.ProviderError as exc:
+        _append(history.message("error", content=str(exc)))
+        _set_busy(False)
+        return None
+    _set_status("thinking…")
+    _spawn(params)
+    return None
+
+
+def resolve_pending(kind, payload):
+    """Continue the loop after the user approved/rejected code or answered."""
+    pending = _STATE["pending"]
+    if pending is None or pending["kind"] != kind:
+        return
+    call = pending["tool_call"]
+    name = call.get("function", {}).get("name", "")
+    _STATE["pending"] = None
+    wm = _wm()
+
+    if kind == "code":
+        if payload == "approved":
+            from . import executor  # lazy — executes on the main thread
+            arguments = json.loads(call["function"]["arguments"])
+            outcome = executor.execute_python(arguments.get("code", ""))
+            # mark the assistant message as approved
+            for msg in reversed(_STATE["messages"]):
+                if msg.get("approval") == "pending":
+                    msg["approval"] = "ok"
+                    break
+            result = outcome
+        else:
+            for msg in reversed(_STATE["messages"]):
+                if msg.get("approval") == "pending":
+                    msg["approval"] = "rejected"
+                    break
+            result = ("REJECTED by user: do not run this code; "
+                      "propose a different approach using the structural tools.")
+        wm.blender_ai_pending_code = ""
+    else:  # ask
+        result = payload
+        wm.blender_ai_ask_question = ""
+        wm.blender_ai_ask_options = ""
+        wm.blender_ai_ask_answer = ""
+
+    _append(history.message(
+        "tool", content=result,
+        tool_name=name, tool_call_id=call.get("id", ""),
+    ))
+    sync_ui()
+    try:
+        history.save(_STATE["messages"], chat_file())
+    except OSError:
+        pass
+
+    try:
+        params = _request_params()
+    except providers.ProviderError as exc:
+        _append(history.message("error", content=str(exc)))
+        return
+    _set_status("thinking…")
+    _spawn(params)
+
+
+# --------------------------------------------------------------------------- control
+
+def stop():
+    _STATE["stop_requested"] = True
+    event = _STATE.get("stop_event")
+    if event is not None:
+        event.set()
+    thread = _STATE.get("thread")
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=2.0)
+    if bpy.app.timers.is_registered(_poll):
+        bpy.app.timers.unregister(_poll)
+    _STATE["thread"] = None
+    _STATE["result"] = None
+    _STATE["stop_requested"] = False
+    _set_busy(False)
+
+
+def new_chat():
+    stop()
+    _STATE["messages"] = []
+    _STATE["pending"] = None
+    wm = _wm()
+    wm.blender_ai_pending_code = ""
+    wm.blender_ai_ask_question = ""
+    wm.blender_ai_ask_options = ""
+    wm.blender_ai_ask_answer = ""
+    try:
+        chat_file().unlink(missing_ok=True)
+    except OSError:
+        pass
+    sync_ui()
+    _set_status("Ready.")
+
+
+# --------------------------------------------------------------------------- registration
+
+def register():
+    restore_history()
+    if _on_load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_on_load_post)
+
+
+def unregister():
+    stop()
+    if _on_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load_post)

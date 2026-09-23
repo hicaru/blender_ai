@@ -1,0 +1,56 @@
+[
+  {
+    "id": "cube_named",
+    "task": "создай куб, назови ваза",
+    "expected_tool_calls": [
+      {"name": "create_primitive", "arguments": {"kind": "cube", "name": "ваза"}}
+    ]
+  },
+  {
+    "id": "bevel_mirror_vase",
+    "task": "создай объект 'ваза' и добавь bevel и зеркальный модификатор",
+    "expected_tool_calls": [
+      {"name": "create_primitive", "arguments": {"kind": "cylinder", "name": "ваза"}},
+      {"name": "add_modifier", "arguments": {"object": "ваза", "type": "bevel"}},
+      {"name": "add_modifier", "arguments": {"object": "ваза", "type": "mirror"}}
+    ]
+  },
+  {
+    "id": "table_leg_fewshot",
+    "task": "make a table leg",
+    "expected_tool_calls": [
+      {"name": "create_primitive", "arguments": {"kind": "cylinder", "name": "TableLeg"}}
+    ]
+  },
+  {
+    "id": "grid_of_spheres",
+    "task": "make 9 spheres in a grid, spacing 3",
+    "expected_tool_calls": [
+      {"name": "batch_create", "arguments": {"kind": "uv_sphere", "count": 9, "arrangement": "grid", "spacing": 3.0}}
+    ]
+  },
+  {
+    "id": "ambiguity_asks_user",
+    "task": "сделай вазу",
+    "expected_tool_calls": [
+      {"name": "ask_user", "arguments": {"question": "?"}}
+    ],
+    "note": "the agent must ask a clarifying question (style/proportions), not guess"
+  },
+  {
+    "id": "unknown_context_first",
+    "task": "покрась выбранное в красный",
+    "expected_tool_calls": [
+      {"name": "get_scene_state", "arguments": {}}
+    ],
+    "note": "depends on scene context; get_scene_state must come first"
+  },
+  {
+    "id": "smooth_shading",
+    "task": "make the object 'Rock' smooth-shaded and subdivided",
+    "expected_tool_calls": [
+      {"name": "set_shading", "arguments": {"objects": ["Rock"], "smooth": true}},
+      {"name": "add_modifier", "arguments": {"object": "Rock", "type": "subdivision"}}
+    ]
+  }
+]
