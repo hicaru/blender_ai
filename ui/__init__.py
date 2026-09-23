@@ -12,6 +12,11 @@ class AI_Message(bpy.types.PropertyGroup):
     content: bpy.props.StringProperty()
     tool_name: bpy.props.StringProperty()
     approval: bpy.props.StringProperty()  # "" | pending | ok | rejected
+    collapsed: bpy.props.BoolProperty(
+        name="Collapsed",
+        description="Long messages render only their first lines",
+        default=True,
+    )
 
 
 _WM_PROPS = (

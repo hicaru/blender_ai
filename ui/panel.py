@@ -5,10 +5,13 @@ import textwrap
 
 import bpy
 
+from .. import agent
 from . import operators
 
 _WRAP_WIDTH = 42
 _TOOL_PREVIEW = 60
+_COLLAPSED_LINES = 3
+_COLLAPSE_HINT = 6  # messages with more wrapped lines than this get a toggle
 
 _ROLE_LABELS = {
     "user": "You",
@@ -17,10 +20,16 @@ _ROLE_LABELS = {
 }
 
 
-def _draw_text_lines(layout, text):
+def _wrap_lines(text):
+    lines = []
     for line in text.splitlines() or [""]:
-        for chunk in textwrap.wrap(line, width=_WRAP_WIDTH) or [""]:
-            layout.label(text=chunk)
+        lines.extend(textwrap.wrap(line, width=_WRAP_WIDTH) or [""])
+    return lines
+
+
+def _draw_text_lines(layout, lines):
+    for chunk in lines:
+        layout.label(text=chunk)
 
 
 class AI_PT_chat(bpy.types.Panel):
@@ -33,10 +42,10 @@ class AI_PT_chat(bpy.types.Panel):
         layout = self.layout
         wm = context.window_manager
 
-        # 1. Status row
+        # 1. Status row: animated ring while the agent is busy
         row = layout.row(align=True)
         if wm.blender_ai_busy:
-            row.progress(factor=0.5, type='RING')
+            row.progress(factor=agent.spinner_factor(), type='RING')
         row.label(text=wm.blender_ai_status or "Ready.")
 
         # 2. Pending code awaiting approval
@@ -55,7 +64,7 @@ class AI_PT_chat(bpy.types.Panel):
         if wm.blender_ai_ask_question:
             box = layout.box()
             box.label(text="Question:", icon='QUESTION')
-            _draw_text_lines(box, wm.blender_ai_ask_question)
+            _draw_text_lines(box.column(align=True), _wrap_lines(wm.blender_ai_ask_question))
             options = []
             try:
                 options = json.loads(wm.blender_ai_ask_options)
@@ -69,18 +78,35 @@ class AI_PT_chat(bpy.types.Panel):
             box.prop(wm, "blender_ai_ask_answer", text="")
             box.operator(operators.AI_OT_answer.bl_idname, text="Answer")
 
-        # 4. Messages
-        for item in wm.blender_ai_messages:
+        # 4. Messages (long ones collapse to their first lines)
+        for index, item in enumerate(wm.blender_ai_messages):
             if item.role == "tool":
                 preview = (item.content[:_TOOL_PREVIEW] + "…") if len(item.content) > _TOOL_PREVIEW else item.content
                 box = layout.box()
                 box.label(text="%s: %s" % (item.tool_name or "tool", preview))
                 continue
+            lines = _wrap_lines(item.content)
+            collapsible = len(lines) > _COLLAPSE_HINT
             box = layout.box()
             if item.role == "error":
                 box.alert = True
-            box.label(text=_ROLE_LABELS.get(item.role, item.role))
-            _draw_text_lines(box.column(align=True), item.content)
+            header = box.row(align=True)
+            if collapsible:
+                toggle = header.operator(
+                    operators.AI_OT_toggle_message.bl_idname,
+                    text="",
+                    icon='TRIA_DOWN' if not item.collapsed else 'TRIA_RIGHT',
+                    emboss=False,
+                )
+                toggle.index = index
+            header.label(text=_ROLE_LABELS.get(item.role, item.role))
+
+            body = box.column(align=True)
+            if collapsible and item.collapsed:
+                _draw_text_lines(body, lines[:_COLLAPSED_LINES])
+                body.label(text="… %d more lines" % (len(lines) - _COLLAPSED_LINES))
+            else:
+                _draw_text_lines(body, lines)
             if item.approval == "pending":
                 box.label(text="(waiting for your approval)", icon='INFO')
             elif item.approval == "rejected":

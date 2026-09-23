@@ -110,6 +110,23 @@ class AI_OT_answer(_ChatOperator, bpy.types.Operator):
         return {'FINISHED'}
 
 
+class AI_OT_toggle_message(_ChatOperator, bpy.types.Operator):
+    """Expand or collapse a long message"""
+
+    bl_idname = "blender_ai.toggle_message"
+    bl_label = "Expand / collapse"
+    bl_options = {'INTERNAL'}
+
+    index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        col = context.window_manager.blender_ai_messages
+        if 0 <= self.index < len(col):
+            item = col[self.index]
+            item.collapsed = not item.collapsed
+        return {'FINISHED'}
+
+
 classes = (
     AI_OT_send,
     AI_OT_stop,
@@ -117,6 +134,7 @@ classes = (
     AI_OT_approve_code,
     AI_OT_reject_code,
     AI_OT_answer,
+    AI_OT_toggle_message,
 )
 
 

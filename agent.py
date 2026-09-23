@@ -81,16 +81,63 @@ def _wm():
     return bpy.context.window_manager
 
 
+# Spinner: Blender's UILayout.progress is static — panels only redraw on
+# events. While busy, a timer bumps a counter and tags VIEW_3D areas for
+# redraw so the RING progress animates.
+_SPINNER = {"t": 0}
+
+
+def _spinner_tick():
+    _SPINNER["t"] += 1
+    wm = _wm()
+    for window in wm.windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+    return 0.08
+
+
+def _start_spinner():
+    if not bpy.app.timers.is_registered(_spinner_tick):
+        bpy.app.timers.register(_spinner_tick, first_interval=0.05)
+
+
+def _stop_spinner():
+    if bpy.app.timers.is_registered(_spinner_tick):
+        bpy.app.timers.unregister(_spinner_tick)
+    _SPINNER["t"] = 0
+    for window in _wm().windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
+def spinner_factor():
+    """Animated factor for the panel's RING progress (0..1)."""
+    return (_SPINNER["t"] % 16) / 16.0
+
+
+# Messages longer than this many characters start collapsed in the panel.
+_COLLAPSE_THRESHOLD = 400
+
+
 def sync_ui():
     wm = _wm()
     col = wm.blender_ai_messages
+    # Preserve per-item collapse flags when the message list is unchanged
+    # up to that index (messages are append-only within a chat).
+    old = [(m.role, m.content, m.collapsed) for m in col]
     col.clear()
-    for msg in _STATE["messages"]:
+    for i, msg in enumerate(_STATE["messages"]):
         item = col.add()
         item.role = msg.get("role", "")
         item.content = msg.get("content", "")
         item.tool_name = msg.get("tool_name", "")
         item.approval = msg.get("approval", "")
+        if i < len(old) and old[i][0] == item.role and old[i][1] == item.content:
+            item.collapsed = old[i][2]
+        else:
+            item.collapsed = len(item.content) > _COLLAPSE_THRESHOLD
 
 
 def _set_status(text):
@@ -99,6 +146,10 @@ def _set_status(text):
 
 def _set_busy(busy):
     _wm().blender_ai_busy = busy
+    if busy:
+        _start_spinner()
+    else:
+        _stop_spinner()
 
 
 def has_pending():

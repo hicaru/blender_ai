@@ -181,6 +181,22 @@ def scenario_ask_user(wm):
     check("answer reached model", final == "You chose: round", final)
 
 
+def scenario_collapse(wm):
+    print("- scenario: long messages collapse")
+    providers.chat_completions = lambda *a, **k: mock_response(content="ok")
+    wm.blender_ai_input = "X" * 1000
+    bpy.ops.blender_ai.send()
+    check("settled", pump())
+    first = wm.blender_ai_messages[0]
+    check("long message auto-collapsed", first.collapsed)
+    check("short messages not collapsed",
+          not wm.blender_ai_messages[-1].collapsed)
+    bpy.ops.blender_ai.toggle_message(index=0)
+    check("expand works", not wm.blender_ai_messages[0].collapsed)
+    bpy.ops.blender_ai.toggle_message(index=0)
+    check("collapse works", wm.blender_ai_messages[0].collapsed)
+
+
 def scenario_error(wm):
     print("- scenario: provider error surfaces as error message")
 
@@ -226,6 +242,9 @@ def main():
         bpy.ops.blender_ai.new_chat()
 
         scenario_ask_user(wm)
+        bpy.ops.blender_ai.new_chat()
+
+        scenario_collapse(wm)
         bpy.ops.blender_ai.new_chat()
 
         scenario_error(wm)
