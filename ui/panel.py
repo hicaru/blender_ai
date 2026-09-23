@@ -108,15 +108,12 @@ class AI_PT_chat(bpy.types.Panel):
             for chunk in _wrap_lines(wm.blender_ai_live)[-4:]:
                 col.label(text=chunk)
 
-        # 5. Input (the Paste button reads the clipboard directly — the
-        #    textbox widget itself misses Cmd/Ctrl+V on non-Latin layouts)
+        # 5. Input
         layout.textbox(
             wm, "blender_ai_input",
             initial_visible_lines=3,
             placeholder="Describe what to build...",
         )
-        row = layout.row(align=True)
-        row.operator(operators.AI_OT_paste_input.bl_idname, text="Paste", icon='PASTEDOWN')
 
         # 6. Buttons
         row = layout.row(align=True)
