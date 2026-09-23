@@ -39,6 +39,7 @@ _WM_PROPS = (
     "blender_ai_ask_answer",
     "blender_ai_show_all_tools",
     "blender_ai_live",
+    "blender_ai_show_live",
 )
 
 
@@ -73,6 +74,10 @@ def register():
         name="Live reasoning",
         description="Tail of the model's reasoning while it streams",
         maxlen=2000,
+    )
+    wm.blender_ai_show_live = bpy.props.BoolProperty(
+        name="Show reasoning tail",
+        default=False,
     )
 
 

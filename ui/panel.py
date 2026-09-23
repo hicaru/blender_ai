@@ -100,13 +100,22 @@ class AI_PT_chat(bpy.types.Panel):
             row.progress(factor=agent.spinner_factor(), type='RING')
         row.label(text=wm.blender_ai_status or "Ready.")
 
-        # 4b. Live reasoning tail streaming from the model
-        if wm.blender_ai_busy and wm.blender_ai_live:
+        # 4b. Thinking box: streams live while busy, then stays in the
+        #     panel (collapsed, open on click) after the answer
+        if wm.blender_ai_live:
+            expanded = wm.blender_ai_busy or wm.blender_ai_show_live
             box = layout.box()
-            col = box.column(align=True)
-            col.label(text="Thinking (live):", icon='TEMP')
-            for chunk in _wrap_lines(wm.blender_ai_live)[-4:]:
-                col.label(text=chunk)
+            header = box.row(align=True)
+            header.prop(
+                wm, "blender_ai_show_live",
+                text="Thinking" if not wm.blender_ai_busy else "Thinking (live)",
+                icon='TRIA_DOWN' if expanded else 'TRIA_RIGHT',
+                toggle=True, emboss=False,
+            )
+            if expanded:
+                col = box.column(align=True)
+                for chunk in _wrap_lines(wm.blender_ai_live)[-6:]:
+                    col.label(text=chunk)
 
         # 5. Input
         layout.textbox(

@@ -196,6 +196,7 @@ def chat_completions(
     reasoning_effort="",
     stream=False,
     on_delta=None,
+    max_tokens=8192,
 ):
     """POST ``{base_url}/chat/completions`` and return a normalized dict.
 
@@ -231,6 +232,10 @@ def chat_completions(
         "messages": messages,
         "temperature": temperature,
     }
+    if max_tokens:
+        # Reasoning tokens count against the output budget: without an
+        # explicit cap a thinking model can return empty content.
+        payload["max_tokens"] = int(max_tokens)
     if tools:
         payload["tools"] = tools
     _apply_reasoning(payload, provider_id, thinking, reasoning_effort)

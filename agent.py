@@ -59,13 +59,22 @@ def _persist():
 
 
 def restore_history():
-    scene = bpy.context.scene
-    raw = scene.get(_SCENE_KEY, "") if scene else ""
+    # At Blender startup the context is restricted (no scene/window), so
+    # every access is guarded; the load_post handler restores properly
+    # right after the file opens.
+    try:
+        scene = bpy.context.scene
+        raw = scene.get(_SCENE_KEY, "") if scene else ""
+    except AttributeError:
+        raw = ""
     try:
         _STATE["messages"] = history.from_json(raw) if raw else []
     except ValueError:
         _STATE["messages"] = []
-    sync_ui()
+    try:
+        sync_ui()
+    except AttributeError:
+        pass
 
 
 # --------------------------------------------------------------------------- prefs
@@ -170,14 +179,17 @@ def _set_busy(busy):
         # installed one, while smoke tests run from sources) unregisters.
         pass
     if busy:
-        _start_spinner()
-    else:
-        _stop_spinner()
+        # fresh request: drop the previous stream's reasoning tail
         _STATE["live"] = {}
         try:
             _wm().blender_ai_live = ""
         except AttributeError:
             pass
+        _start_spinner()
+    else:
+        # keep blender_ai_live: the Thinking box stays in the panel
+        # (collapsed) after the answer
+        _stop_spinner()
 
 
 def has_pending():
@@ -258,6 +270,9 @@ def _spawn(params):
     _STATE["stop_event"] = stop_event
     _STATE["stop_requested"] = False
     _STATE["result"] = None
+    # busy + live reset BEFORE the thread starts — a fast provider could
+    # otherwise deliver deltas that the reset then wipes
+    _set_busy(True)
     thread = threading.Thread(
         target=_worker,
         args=(params, snapshot, tools_schema(), stop_event),
@@ -265,7 +280,6 @@ def _spawn(params):
     )
     _STATE["thread"] = thread
     thread.start()
-    _set_busy(True)
     if not bpy.app.timers.is_registered(_poll):
         bpy.app.timers.register(_poll, first_interval=0.2)
 
@@ -297,16 +311,13 @@ def _worker(params, snapshot, tools, stop_event):
 
 
 def _update_live_status():
-    """Reflect streaming progress in the panel while the worker runs."""
-    live = _STATE.get("live") or {}
-    reasoning = live.get("reasoning", 0)
-    content = live.get("content", 0)
-    if reasoning:
-        _set_status("reasoning… (%d chars)" % reasoning)
-    elif content:
-        _set_status("writing… (%d chars)" % content)
+    """Feed the live reasoning tail to the panel while the worker runs.
+
+    Deliberately does not touch the status text — the animated ring plus
+    the persistent Thinking box already show progress.
+    """
     try:
-        _wm().blender_ai_live = live.get("tail", "")
+        _wm().blender_ai_live = (_STATE.get("live") or {}).get("tail", "")
     except AttributeError:
         pass
 
@@ -320,6 +331,8 @@ def _poll():
             _update_live_status()
             return 0.2
 
+    # thread finished: keep the final reasoning tail in the panel
+    _update_live_status()
     result = _STATE["result"]
     _STATE["result"] = None
     _STATE["thread"] = None
@@ -349,6 +362,10 @@ def _apply_assistant_message(message):
     reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
     if not isinstance(reasoning, str):
         reasoning = json.dumps(reasoning, ensure_ascii=False)
+    if not tool_calls and not content and reasoning:
+        content = ("(Empty answer: the output token budget was most likely "
+                   "consumed entirely by reasoning. Ask the user to lower "
+                   "the Reasoning effort in preferences, then continue.)")
     _append(history.message(
         "assistant", content=content, tool_calls=tool_calls or None,
         reasoning=reasoning,
@@ -495,6 +512,7 @@ def new_chat():
     wm.blender_ai_ask_question = ""
     wm.blender_ai_ask_options = ""
     wm.blender_ai_ask_answer = ""
+    wm.blender_ai_live = ""
     scene = bpy.context.scene
     if scene is not None and scene.get(_SCENE_KEY) is not None:
         del scene[_SCENE_KEY]

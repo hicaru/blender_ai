@@ -159,7 +159,6 @@ def scenario_ask_user(wm):
                           {"question": "Round or square?",
                            "options": ["round", "square"]}),
             ])
-        # The user's answer must arrive as the ask_user tool result.
         tool_results = [m for m in messages if m.get("role") == "tool"]
         answer = tool_results[-1]["content"] if tool_results else ""
         return mock_response(content="You chose: %s" % answer)
@@ -171,15 +170,76 @@ def scenario_ask_user(wm):
     check("question in panel", wm.blender_ai_ask_question == "Round or square?")
     check("options in panel", wm.blender_ai_ask_options == '["round", "square"]')
 
-    # answer via option button path (operator with .option property)
     op = bpy.ops.blender_ai.answer
-    # emulate the panel option button: set the option property via dict
     result = op(option="round")
     check("answer settled", result == {'FINISHED'} and pump())
     check("ask fields cleared", not wm.blender_ai_ask_question)
     final = wm.blender_ai_messages[-1].content
     check("answer reached model", final == "You chose: round", final)
-    check("live reasoning cleared after settle", wm.blender_ai_live == "")
+
+
+def scenario_reasoning(wm):
+    print("- scenario: reasoning captured, shown, persists after answer")
+    def mock_reasoning(provider_id, api_key, model, messages, tools=None,
+                       temperature=0.4, timeout=90, thinking=False, **kwargs):
+        on_delta = kwargs.get("on_delta")
+        if on_delta:
+            on_delta("reasoning", "persisted live tail ")
+        return mock_response(
+            content="A cube is a six-sided primitive.",
+            extra_message_fields={"reasoning_content": "User wants a cube; "
+                                  "create_primitive covers it; no python needed."})
+
+    providers.chat_completions = mock_reasoning
+    wm.blender_ai_input = "make a cube"
+    bpy.ops.blender_ai.send()
+    check("settled", pump())
+    last = wm.blender_ai_messages[-1]
+    check("reasoning captured in panel", "create_primitive covers it" in last.reasoning)
+    check("reasoning hidden by default", not last.show_reasoning)
+    check("live tail persists after answer",
+          "persisted live tail" in wm.blender_ai_live)
+
+    # reasoning-only response (budget eaten) -> guard hint, never blank
+    def mock_empty(provider_id, api_key, model, messages, tools=None,
+                   temperature=0.4, timeout=90, thinking=False, **kwargs):
+        on_delta = kwargs.get("on_delta")
+        if on_delta:
+            on_delta("reasoning", "all budget spent")
+        return mock_response(
+            extra_message_fields={"reasoning_content": "all budget spent"})
+
+    providers.chat_completions = mock_empty
+    wm.blender_ai_input = "why empty"
+    bpy.ops.blender_ai.send()
+    check("empty settled", pump())
+    last = wm.blender_ai_messages[-1]
+    check("empty answer shows hint",
+          last.content.startswith("(Empty answer"), last.content[:50])
+    check("live tail refreshed by new request",
+          "all budget spent" in wm.blender_ai_live)
+    stored = [m for m in agent.messages() if m.get("role") == "assistant"]
+    check("reasoning stored in history",
+          stored and any("create_primitive" in (m.get("reasoning") or "")
+                         for m in stored))
+
+    # outbound request must not carry reasoning back to the provider
+    captured = {}
+    def spy(provider_id, api_key, model, messages, tools=None,
+            temperature=0.4, timeout=90, thinking=False, **kwargs):
+        captured["messages"] = messages
+        return mock_response(content="done")
+    providers.chat_completions = spy
+    wm.blender_ai_input = "again"
+    bpy.ops.blender_ai.send()
+    pump()
+    outbound = captured.get("messages", [])
+    check("reasoning stripped from outbound",
+          outbound and all("reasoning" not in m and "reasoning_content" not in m
+                           for m in outbound))
+    # New chat must clear the persisted live tail
+    bpy.ops.blender_ai.new_chat()
+    check("new chat clears live tail", wm.blender_ai_live == "")
 
 
 def scenario_collapse(wm):
@@ -196,38 +256,6 @@ def scenario_collapse(wm):
     check("expand works", not wm.blender_ai_messages[0].collapsed)
     bpy.ops.blender_ai.toggle_message(index=0)
     check("collapse works", wm.blender_ai_messages[0].collapsed)
-
-
-def scenario_reasoning(wm):
-    print("- scenario: model reasoning is captured and shown")
-    providers.chat_completions = lambda *a, **k: mock_response(
-        content="A cube is a six-sided primitive.",
-        extra_message_fields={"reasoning_content": "User wants a cube; "
-                              "create_primitive covers it; no python needed."})
-    wm.blender_ai_input = "make a cube"
-    bpy.ops.blender_ai.send()
-    check("settled", pump())
-    last = wm.blender_ai_messages[-1]
-    check("reasoning captured in panel", "create_primitive covers it" in last.reasoning)
-    check("reasoning hidden by default", not last.show_reasoning)
-    from blender_ai import history as hist
-    stored = [m for m in agent.messages() if m.get("role") == "assistant"]
-    check("reasoning stored in history",
-          stored and "create_primitive" in (stored[-1].get("reasoning") or ""))
-    # outbound request must not carry reasoning back to the provider
-    captured = {}
-    def spy(provider_id, api_key, model, messages, tools=None,
-            temperature=0.4, timeout=90, thinking=False, **kwargs):
-        captured["messages"] = messages
-        return mock_response(content="done")
-    providers.chat_completions = spy
-    wm.blender_ai_input = "again"
-    bpy.ops.blender_ai.send()
-    pump()
-    outbound = captured.get("messages", [])
-    check("reasoning stripped from outbound",
-          outbound and all("reasoning" not in m and "reasoning_content" not in m
-                           for m in outbound))
 
 
 def scenario_extension_tools(wm):
