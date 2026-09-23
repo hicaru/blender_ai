@@ -13,3 +13,14 @@ tags = ["3D View", "Modeling"]
 
 [permissions]
 network = "Sends chat requests to the configured LLM provider"
+
+[build]
+paths_exclude_pattern = [
+  "_work/",
+  "tests/",
+  "__pycache__/",
+  ".rlm/",
+  ".git/",
+  "*.zip",
+  ".gitignore",
+]
