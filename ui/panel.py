@@ -6,7 +6,7 @@ import textwrap
 import bpy
 
 from . import operators
-from .. import agent
+from .. import agent, loop_state
 from ..prefs import get_prefs
 
 _WRAP_WIDTH = 42
@@ -14,6 +14,8 @@ _COLLAPSED_LINES = 3
 _COLLAPSE_HINT = 6  # messages with more wrapped lines than this get a toggle
 _TOOL_RUN_PREVIEW = 3  # tool-log tail shown before "… N earlier tool calls"
 _TOOL_PREVIEW = 60     # characters of a tool result shown per log line
+_LOOP_RECORD_PREVIEW = 6   # record.md entries shown in the loop section
+_LOOP_LINE_PREVIEW = 3     # body lines shown per record entry
 
 
 def _preview(content):
@@ -134,6 +136,44 @@ class AI_PT_chat(bpy.types.Panel):
         col.operator(operators.AI_OT_stop.bl_idname, icon='PAUSE')
         col.enabled = wm.blender_ai_busy
         row.operator(operators.AI_OT_new_chat.bl_idname, icon='FILE_NEW')
+
+        # 7. Repair loop: live state.md fields + latest record.md entries
+        self._draw_loop_section(layout)
+
+    def _draw_loop_section(self, layout):
+        """Repair-loop state + record, read straight from the store dir."""
+        prefs = get_prefs()
+        store = loop_state.resolve_store_dir(
+            getattr(prefs, "skill_store", "") if prefs else "",
+        )
+
+        box = layout.box()
+        box.label(text="Repair loop", icon='LOOP_FORWARDS')
+        fields = loop_state.read_state_fields(store)
+        if not fields:
+            box.label(text="Idle — no loop has run yet", icon='INFO')
+        else:
+            col = box.column(align=True)
+            for name in loop_state.STATE_FIELDS:
+                self._draw_wrapped(col, "%s: %s" % (name, fields.get(name, "")))
+
+        entries = loop_state.read_record_entries(
+            store, last_n=_LOOP_RECORD_PREVIEW,
+        )
+        rec = box.box()
+        rec.label(text="Record (latest %s)" % len(entries) if entries else "Record")
+        if not entries:
+            rec.label(text="No entries yet")
+        for header, lines in entries:
+            self._draw_wrapped(rec, "▸ " + header)
+            for line in lines[:_LOOP_LINE_PREVIEW]:
+                self._draw_wrapped(rec, "   " + line)
+            if len(lines) > _LOOP_LINE_PREVIEW:
+                rec.label(text="   … +%s more lines" % (len(lines) - _LOOP_LINE_PREVIEW))
+
+    def _draw_wrapped(self, layout, text):
+        for chunk in _wrap_lines(text):
+            layout.label(text=chunk)
 
     def _draw_tool_run(self, layout, wm, run):
         """Consecutive tool messages as a slim log; long runs fold to the tail."""

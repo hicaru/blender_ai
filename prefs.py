@@ -132,6 +132,22 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         min=10,
         max=1000,
     )
+    repair_bound: bpy.props.IntProperty(
+        name="Repair loop bound",
+        description="Max automatic repair-loop iterations after an errored "
+                    "round (the loop's activation bound; further retries "
+                    "stay manual)",
+        default=3,
+        min=1,
+        max=10,
+    )
+    skill_store: bpy.props.StringProperty(
+        name="Skill store",
+        description="Directory for the durable skill store (notes + loop files); "
+                    "empty uses ~/BlenderAI/skills",
+        default="",
+        maxlen=1024,
+    )
 
     def get_api_key(self):
         return getattr(self, "api_key_%s" % self.provider, "")

@@ -1,16 +1,19 @@
 """System prompt assembly.
 
-Structure follows the knowlange complex-prompt template
-(courses/prompt_engineering_interactive_tutorial 09: task context -> rules
--> examples -> input data). The reasoning rules encode the ReAct loop
-(ReAct_Synergizing_Reasoning_and_Acting_in_Language_Models.md): interleaved
-thought -> action -> observation. The bounded-state idea from SKILL.state
-appears as history trimming + get_scene_state as the canonical observation.
+Structure is the task-context -> rules -> examples -> input-data layout:
+role first, then hard rules, then scene facts, one worked example, then
+the per-request input. The reasoning rule is think-act-observe: a short
+"why" before every tool call, the tool result becomes the observation,
+and the next step must use it.
 
-Out of scope on purpose (evaluated, rejected): Tree-of-Thoughts,
-Quiet-STaR, multi-agent systems, external agent memory — a single-loop tool
-agent does not need them; BVH/octree spatial structures are already inside
-Blender.
+Bounded state on purpose: conversation history is trimmed to a preference
+cap and get_scene_state is the canonical, re-fetchable observation, so no
+scene knowledge has to persist in the transcript.
+
+Out of scope on purpose (evaluated, rejected): tree-of-thoughts search,
+internalized-reasoning experiments, multi-agent systems, external agent
+memory — a single-loop tool agent does not need them; BVH/octree spatial
+structures are already inside Blender.
 """
 
 SYSTEM_PROMPT = """# Role
@@ -19,7 +22,7 @@ through tools: the user describes what to build or change, and you do it in
 the live scene.
 
 # Rules
-1. Reason before acting (ReAct): before every tool call, write ONE short
+1. Reason before acting: before every tool call, write ONE short
    sentence saying why. The tool result you receive is your observation;
    use it before the next step.
 2. Ground yourself: if the request depends on what already exists, call

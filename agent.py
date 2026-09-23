@@ -21,7 +21,7 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
-from . import debuglog, history, providers
+from . import debuglog, history, loop_state, providers
 
 PACKAGE = __package__
 
@@ -246,6 +246,20 @@ def pending_view():
     }
 
 
+def _loop_store_dir() -> str:
+    """Skill-store dir from preferences ('' lets loop_state pick a default)."""
+    prefs = _prefs()
+    return str(getattr(prefs, "skill_store", "") or "")
+
+
+def _repair_bound() -> int:
+    prefs = _prefs()
+    try:
+        return max(1, int(getattr(prefs, "repair_bound", 3)))
+    except (TypeError, ValueError):
+        return 3
+
+
 def send_user_message(text):
     if is_busy() or has_pending():
         return
@@ -273,6 +287,7 @@ def send_user_message(text):
         return
 
     _set_status("thinking…")
+    loop_state.inject_into_request(_STATE["messages"], _loop_store_dir())
     _spawn(params)
 
 
@@ -290,7 +305,7 @@ def _spawn(params):
     # Internal keys ("reasoning", "approval", "tool_name") must not go to
     # the provider — e.g. DeepSeek rejects reasoning_content on input.
     # reconcile(): repair dangling tool_calls/results so a request can
-    # never go out in a protocol-invalid shape (pi-style invariant).
+    # never go out in a protocol-invalid shape.
     snapshot = [
         {k: v for k, v in m.items() if k not in ("reasoning", "approval", "tool_name")}
         for m in history.reconcile(_request_messages(params))
@@ -407,6 +422,23 @@ def _poll_run():
     if "error" in result:
         debuglog.log("error surfaced", error=result["error"][:200])
         _append(history.message("error", content=result["error"]))
+        store = _loop_store_dir()
+        decision = loop_state.on_round_failure(result["error"], _repair_bound(), store)
+        if decision.action == "continue":
+            # Repair loop: bounded automatic retry with the failure
+            # signature carried in durable context (one iteration = one
+            # round; loop files live under the skill store).
+            loop_state.inject_into_request(_STATE["messages"], store)
+            _set_status(f"repairing ({decision.iteration}/{decision.bound})…")
+            try:
+                params = _request_params()
+            except providers.ProviderError as exc:
+                _append(history.message("error", content=str(exc)))
+                _set_busy(False)
+                _set_status("Error.")
+                return None
+            _spawn(params)
+            return 0.2
         _set_busy(False)
         _set_status("Error.")
         return None
@@ -448,6 +480,8 @@ def _apply_assistant_message(message):
     ))
 
     if not tool_calls:
+        if content and not content.startswith("(Empty answer"):
+            loop_state.on_round_success(content, _loop_store_dir())
         _set_busy(False)
         _set_status("Ready.")
         return None
@@ -587,6 +621,7 @@ def resolve_pending(kind, payload):
 def stop():
     debuglog.log("stop requested")
     _STATE["stop_requested"] = True
+    loop_state.on_user_interrupt(_loop_store_dir())
     event = _STATE.get("stop_event")
     if event is not None:
         event.set()

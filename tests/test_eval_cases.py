@@ -1,4 +1,4 @@
-"""Offline eval-case validation (knowlange/prompt_evaluations methodology).
+"""Offline eval-case validation.
 
 The JSON cases describe "task -> expected tool calls". A live eval would run
 them against a real provider; offline we validate that every expected tool

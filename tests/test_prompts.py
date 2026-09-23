@@ -1,4 +1,4 @@
-"""System prompt tests: template sections present, size budget, ReAct rules."""
+"""System prompt tests: template sections present, size budget, reasoning rules."""
 
 import unittest
 
@@ -12,17 +12,16 @@ class TestSystemPrompt(unittest.TestCase):
         self.text = prompts.SYSTEM_PROMPT
 
     def test_template_sections(self):
-        # knowlange complex-prompt template: role/context, rules, facts,
-        # example, input
+        # task-context layout: role/context, rules, facts, example, input
         for section in ("# Role", "# Rules", "# Blender facts", "# Example",
                         "# Input"):
             self.assertIn(section, self.text)
 
-    def test_react_and_tooling_rules(self):
+    def test_reasoning_and_tooling_rules(self):
         self.assertIn("get_scene_state", self.text)
         self.assertIn("run_python", self.text)
         self.assertIn("ask_user", self.text)
-        # ReAct: thought before action, tool result is the observation
+        # reasoning: thought before action, tool result is the observation
         self.assertIn("observation", self.text.lower())
 
     def test_subject_facts(self):

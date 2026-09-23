@@ -278,7 +278,7 @@ if __name__ == "__main__":
 
 
 class TestResilience(unittest.TestCase):
-    """Retries, user-stop cancellation, stream usage capture (pi-style)."""
+    """Retries, user-stop cancellation, stream usage capture."""
 
     def _silent_sleep(self):
         sleeps = []
