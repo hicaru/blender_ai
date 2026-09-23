@@ -17,9 +17,11 @@ import json
 __all__ = ("message", "append", "trim", "to_json", "from_json", "save", "load")
 
 
-def message(role, content="", tool_calls=None, tool_name="", tool_call_id="", approval=""):
+def message(role, content="", tool_calls=None, tool_name="", tool_call_id="", approval="", reasoning=""):
     """Build one history dict, omitting empty optional keys."""
     msg = {"role": role, "content": content}
+    if reasoning:
+        msg["reasoning"] = reasoning
     if tool_calls:
         msg["tool_calls"] = tool_calls
     if tool_name:

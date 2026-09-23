@@ -17,6 +17,15 @@ class AI_Message(bpy.types.PropertyGroup):
         description="Long messages render only their first lines",
         default=True,
     )
+    reasoning: bpy.props.StringProperty(
+        name="Reasoning",
+        description="Model's thinking, when the provider reports it",
+    )
+    show_reasoning: bpy.props.BoolProperty(
+        name="Show reasoning",
+        description="Expand the model's thinking block",
+        default=False,
+    )
 
 
 _WM_PROPS = (

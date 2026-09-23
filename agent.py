@@ -72,6 +72,7 @@ def _request_params():
         "temperature": prefs.temperature,
         "auto_approve_code": prefs.auto_approve_code,
         "history_limit": prefs.history_limit,
+        "enable_thinking": prefs.enable_thinking,
     }
 
 
@@ -126,7 +127,7 @@ def sync_ui():
     col = wm.blender_ai_messages
     # Preserve per-item collapse flags when the message list is unchanged
     # up to that index (messages are append-only within a chat).
-    old = [(m.role, m.content, m.collapsed) for m in col]
+    old = [(m.role, m.content, m.collapsed, m.show_reasoning) for m in col]
     col.clear()
     for i, msg in enumerate(_STATE["messages"]):
         item = col.add()
@@ -134,8 +135,10 @@ def sync_ui():
         item.content = msg.get("content", "")
         item.tool_name = msg.get("tool_name", "")
         item.approval = msg.get("approval", "")
+        item.reasoning = msg.get("reasoning", "")
         if i < len(old) and old[i][0] == item.role and old[i][1] == item.content:
             item.collapsed = old[i][2]
+            item.show_reasoning = old[i][3]
         else:
             item.collapsed = len(item.content) > _COLLAPSE_THRESHOLD
 
@@ -145,7 +148,12 @@ def _set_status(text):
 
 
 def _set_busy(busy):
-    _wm().blender_ai_busy = busy
+    try:
+        _wm().blender_ai_busy = busy
+    except AttributeError:
+        # WM props can be gone when a second copy of the addon (e.g. the
+        # installed one, while smoke tests run from sources) unregisters.
+        pass
     if busy:
         _start_spinner()
     else:
@@ -224,7 +232,12 @@ def _request_messages(params):
 def _spawn(params):
     from .executor import tools_schema  # lazy: executor may not exist yet
 
-    snapshot = [dict(m) for m in _request_messages(params)]
+    # Internal keys ("reasoning", "approval", "tool_name") must not go to
+    # the provider — e.g. DeepSeek rejects reasoning_content on input.
+    snapshot = [
+        {k: v for k, v in m.items() if k not in ("reasoning", "approval", "tool_name")}
+        for m in _request_messages(params)
+    ]
     stop_event = threading.Event()
     _STATE["stop_event"] = stop_event
     _STATE["stop_requested"] = False
@@ -250,6 +263,7 @@ def _worker(params, snapshot, tools, stop_event):
             snapshot,
             tools=tools,
             temperature=params["temperature"],
+            thinking=params["enable_thinking"],
         )
         _STATE["result"] = result
     except Exception as exc:  # noqa: BLE001 — worker must never raise into the void
@@ -290,7 +304,14 @@ def _poll():
 def _apply_assistant_message(message):
     tool_calls = message.get("tool_calls") or []
     content = message.get("content") or ""
-    _append(history.message("assistant", content=content, tool_calls=tool_calls or None))
+    # DeepSeek returns reasoning_content; OpenRouter normalizes to reasoning.
+    reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+    if not isinstance(reasoning, str):
+        reasoning = json.dumps(reasoning, ensure_ascii=False)
+    _append(history.message(
+        "assistant", content=content, tool_calls=tool_calls or None,
+        reasoning=reasoning,
+    ))
 
     if not tool_calls:
         _set_busy(False)

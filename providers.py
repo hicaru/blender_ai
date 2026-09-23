@@ -94,6 +94,7 @@ def chat_completions(
     tools=None,
     temperature=0.4,
     timeout=90,
+    thinking=False,
 ):
     """POST ``{base_url}/chat/completions`` and return a normalized dict.
 
@@ -101,6 +102,11 @@ def chat_completions(
     The message dict contains ``role``, ``content`` and, when the model
     decided to call tools, ``tool_calls`` (list of
     ``{"id", "type": "function", "function": {"name", "arguments"}}``).
+    With ``thinking=True`` reasoning is requested (and the message may
+    carry ``reasoning_content``). Only z.ai and DeepSeek understand the
+    ``thinking`` parameter; OpenRouter rejects nothing but ignores it,
+    so it is omitted there.
+
     Raises :class:`ProviderError` on any failure.
     """
     provider = PROVIDERS.get(provider_id)
@@ -125,6 +131,11 @@ def chat_completions(
     }
     if tools:
         payload["tools"] = tools
+    if thinking and provider_id in ("zai", "deepseek"):
+        payload["thinking"] = {"type": "enabled"}
+    elif not thinking and provider_id == "zai":
+        # GLM reasons by default; switch it off explicitly to save tokens
+        payload["thinking"] = {"type": "disabled"}
 
     try:
         response = requests.post(

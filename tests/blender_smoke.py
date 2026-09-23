@@ -54,12 +54,11 @@ def pump(timeout=60):
     return False
 
 
-def mock_response(content="", tool_calls=None):
-    return {
-        "message": {"role": "assistant", "content": content,
-                    "tool_calls": tool_calls or None},
-        "usage": {},
-    }
+def mock_response(content="", tool_calls=None, extra_message_fields=None):
+    message = {"role": "assistant", "content": content,
+               "tool_calls": tool_calls or None}
+    message.update(extra_message_fields or {})
+    return {"message": message, "usage": {}}
 
 
 def tool_call(call_id, name, arguments):
@@ -74,7 +73,7 @@ def scenario_structural_loop(wm):
     calls = {"n": 0}
 
     def mock(provider_id, api_key, model, messages, tools=None,
-             temperature=0.4, timeout=90):
+             temperature=0.4, timeout=90, thinking=False):
         calls["n"] += 1
         if calls["n"] == 1:
             return mock_response(tool_calls=[
@@ -102,7 +101,7 @@ def scenario_code_gate(wm):
     calls = {"n": 0}
 
     def mock_gate(provider_id, api_key, model, messages, tools=None,
-                  temperature=0.4, timeout=90):
+                  temperature=0.4, timeout=90, thinking=False):
         calls["n"] += 1
         if calls["n"] == 1:
             return mock_response(tool_calls=[
@@ -151,7 +150,7 @@ def scenario_ask_user(wm):
     calls = {"n": 0}
 
     def mock_ask(provider_id, api_key, model, messages, tools=None,
-                 temperature=0.4, timeout=90):
+                 temperature=0.4, timeout=90, thinking=False):
         calls["n"] += 1
         if calls["n"] == 1:
             return mock_response(tool_calls=[
@@ -197,11 +196,43 @@ def scenario_collapse(wm):
     check("collapse works", wm.blender_ai_messages[0].collapsed)
 
 
+def scenario_reasoning(wm):
+    print("- scenario: model reasoning is captured and shown")
+    providers.chat_completions = lambda *a, **k: mock_response(
+        content="A cube is a six-sided primitive.",
+        extra_message_fields={"reasoning_content": "User wants a cube; "
+                              "create_primitive covers it; no python needed."})
+    wm.blender_ai_input = "make a cube"
+    bpy.ops.blender_ai.send()
+    check("settled", pump())
+    last = wm.blender_ai_messages[-1]
+    check("reasoning captured in panel", "create_primitive covers it" in last.reasoning)
+    check("reasoning hidden by default", not last.show_reasoning)
+    from blender_ai import history as hist
+    stored = [m for m in agent.messages() if m.get("role") == "assistant"]
+    check("reasoning stored in history",
+          stored and "create_primitive" in (stored[-1].get("reasoning") or ""))
+    # outbound request must not carry reasoning back to the provider
+    captured = {}
+    def spy(provider_id, api_key, model, messages, tools=None,
+            temperature=0.4, timeout=90, thinking=False):
+        captured["messages"] = messages
+        return mock_response(content="done")
+    providers.chat_completions = spy
+    wm.blender_ai_input = "again"
+    bpy.ops.blender_ai.send()
+    pump()
+    outbound = captured.get("messages", [])
+    check("reasoning stripped from outbound",
+          outbound and all("reasoning" not in m and "reasoning_content" not in m
+                           for m in outbound))
+
+
 def scenario_error(wm):
     print("- scenario: provider error surfaces as error message")
 
     def mock_fail(provider_id, api_key, model, messages, tools=None,
-                  temperature=0.4, timeout=90):
+                  temperature=0.4, timeout=90, thinking=False):
         raise RuntimeError("HTTP 500: simulated outage")
 
     providers.chat_completions = mock_fail
@@ -224,6 +255,7 @@ def main():
         provider="zai",
         api_key_zai="test-key", api_key_deepseek="", api_key_openrouter="",
         model="", temperature=0.4, auto_approve_code=False, history_limit=80,
+        enable_thinking=True,
         get_api_key=lambda: "test-key",
         get_model=lambda: "glm-4.6",
     )
@@ -245,6 +277,9 @@ def main():
         bpy.ops.blender_ai.new_chat()
 
         scenario_collapse(wm)
+        bpy.ops.blender_ai.new_chat()
+
+        scenario_reasoning(wm)
         bpy.ops.blender_ai.new_chat()
 
         scenario_error(wm)

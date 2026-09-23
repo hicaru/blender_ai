@@ -111,6 +111,11 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         description="Run run_python code without confirmation. Only enable if you trust the model",
         default=False,
     )
+    enable_thinking: bpy.props.BoolProperty(
+        name="Enable reasoning (thinking)",
+        description="Ask the model to reason before answering; its thinking shows as a collapsible block in the chat. Uses extra tokens",
+        default=True,
+    )
     history_limit: bpy.props.IntProperty(
         name="History limit",
         description="Trim conversation to this many messages before each request (bounded state)",
@@ -142,6 +147,7 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         default_model = providers.PROVIDERS[self.provider]["default_model"]
         layout.prop(self, "model", placeholder=default_model or "model id, e.g. openai/gpt-4o-mini")
         layout.prop(self, "temperature")
+        layout.prop(self, "enable_thinking")
         layout.prop(self, "auto_approve_code")
         layout.prop(self, "history_limit")
 

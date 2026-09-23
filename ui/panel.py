@@ -151,6 +151,16 @@ class AI_PT_chat(bpy.types.Panel):
         header.label(text=_ROLE_LABELS.get(item.role, item.role))
 
         body = box.column(align=True)
+        if item.reasoning:
+            body.prop(
+                item, "show_reasoning",
+                text="Thinking", toggle=True,
+                icon='TRIA_DOWN' if item.show_reasoning else 'TRIA_RIGHT',
+            )
+            if item.show_reasoning:
+                thoughts = box.column(align=True)
+                for chunk in _wrap_lines(item.reasoning)[:60]:
+                    thoughts.label(text=chunk, icon='DOT')
         if collapsible and item.collapsed:
             _draw_text_lines(body, lines[:_COLLAPSED_LINES])
             body.label(text="… %d more lines" % (len(lines) - _COLLAPSED_LINES))

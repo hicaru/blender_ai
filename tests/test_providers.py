@@ -154,5 +154,18 @@ class TestListModels(unittest.TestCase):
             providers.list_models("deepseek", "k")
 
 
+    def test_thinking_param_gating(self):
+        _install_post(body={"choices": [{"message": {"role": "assistant",
+                                                     "content": ""}}]})
+        providers.chat_completions("deepseek", "k", "m", [], thinking=True)
+        self.assertEqual(_CAPTURED["json"]["thinking"], {"type": "enabled"})
+        providers.chat_completions("deepseek", "k", "m", [])
+        self.assertNotIn("thinking", _CAPTURED["json"])
+        providers.chat_completions("zai", "k", "m", [], thinking=False)
+        self.assertEqual(_CAPTURED["json"]["thinking"], {"type": "disabled"})
+        providers.chat_completions("openrouter", "k", "m", [], thinking=True)
+        self.assertNotIn("thinking", _CAPTURED["json"])
+
+
 if __name__ == "__main__":
     unittest.main()
