@@ -412,6 +412,12 @@ def main():
     print("== blender_ai smoke ==")
     bpy.context.preferences.system.use_online_access = True  # agent guard
 
+    # The repair loop persists to the skill store; sandbox it so this run
+    # never writes loop files or notes into the user's real store.
+    import tempfile
+    loop_tmp = tempfile.mkdtemp(prefix="blender_ai_smoke_")
+    agent._loop_store_dir = lambda: loop_tmp
+
     # If this addon is also installed+enabled as an extension in this
     # Blender config, disable it for the run — otherwise two copies share
     # the same operator/WM property names and quit-time unregister fails.
