@@ -106,5 +106,53 @@ class TestChatCompletions(unittest.TestCase):
             providers.chat_completions("zai", "k", "glm-4.6", [])
 
 
+class TestListModels(unittest.TestCase):
+    def _install_get(self, status_code=200, body=None):
+        requests = providers.requests
+
+        def fake_get(url, headers=None, timeout=None):
+            _CAPTURED.update(url=url, headers=headers, timeout=timeout)
+            response = type("R", (), {})()
+            response.status_code = status_code
+            response.text = _json.dumps(body or {})
+            response._body = body if body is not None else {}
+            response.json = lambda: response._body
+            return response
+
+        requests.get = fake_get
+        _CAPTURED.clear()
+
+    def test_request_form_and_parse(self):
+        self._install_get(body={"data": [{"id": "model-b"}, {"id": "model-a"},
+                                         {"object": "no-id-here"}]})
+        ids = providers.list_models("deepseek", "key-1")
+        self.assertEqual(_CAPTURED["url"], "https://api.deepseek.com/models")
+        self.assertEqual(_CAPTURED["headers"]["Authorization"], "Bearer key-1")
+        self.assertEqual(ids, ["model-a", "model-b"])  # sorted, no-id skipped
+
+    def test_openrouter_keyless(self):
+        self._install_get(body={"data": [{"id": "openai/gpt-4o-mini"}]})
+        ids = providers.list_models("openrouter", "")
+        self.assertEqual(_CAPTURED["url"], "https://openrouter.ai/api/v1/models")
+        self.assertNotIn("Authorization", _CAPTURED["headers"])
+        self.assertEqual(ids, ["openai/gpt-4o-mini"])
+
+    def test_missing_key_non_openrouter(self):
+        self._install_get()
+        with self.assertRaises(providers.ProviderError):
+            providers.list_models("zai", "")
+        self.assertNotIn("url", _CAPTURED)
+
+    def test_http_error(self):
+        self._install_get(status_code=401, body={"error": "nope"})
+        with self.assertRaises(providers.ProviderError):
+            providers.list_models("deepseek", "k")
+
+    def test_bad_shape(self):
+        self._install_get(body={"models": ["x"]})
+        with self.assertRaises(providers.ProviderError):
+            providers.list_models("deepseek", "k")
+
+
 if __name__ == "__main__":
     unittest.main()

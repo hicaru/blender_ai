@@ -21,7 +21,7 @@ import json
 
 import requests
 
-__all__ = ("PROVIDERS", "ProviderError", "chat_completions")
+__all__ = ("PROVIDERS", "ProviderError", "chat_completions", "list_models")
 
 
 PROVIDERS = {
@@ -45,6 +45,45 @@ PROVIDERS = {
 
 class ProviderError(RuntimeError):
     """Raised for any provider/network/request-shape failure."""
+
+
+def list_models(provider_id, api_key, timeout=20):
+    """GET ``{base_url}/models`` and return a sorted list of model ids.
+
+    OpenAI-compatible shape: ``{"data": [{"id": ...}, ...]}``.
+    OpenRouter's list is public; z.ai and DeepSeek require the API key.
+    Raises :class:`ProviderError` on any failure.
+    """
+    provider = PROVIDERS.get(provider_id)
+    if provider is None:
+        raise ProviderError("Unknown provider: %r" % provider_id)
+    if not api_key and provider_id != "openrouter":
+        raise ProviderError(
+            "No API key for %s. Set it in Add-ons preferences." % provider["label"]
+        )
+
+    url = provider["base_url"].rstrip("/") + "/models"
+    headers = {"Authorization": "Bearer %s" % api_key} if api_key else {}
+    try:
+        response = requests.get(url, headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        raise ProviderError("Network error talking to %s: %s" % (provider["label"], exc))
+
+    if response.status_code != 200:
+        raise ProviderError(
+            "%s returned HTTP %d: %s"
+            % (provider["label"], response.status_code, response.text[:300])
+        )
+
+    try:
+        data = response.json()["data"]
+        ids = sorted(str(item["id"]) for item in data if item.get("id"))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProviderError("Unexpected model list shape from %s: %s" % (provider["label"], exc))
+
+    if not ids:
+        raise ProviderError("%s returned an empty model list." % provider["label"])
+    return ids
 
 
 def chat_completions(

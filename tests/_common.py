@@ -29,7 +29,11 @@ def _ensure_requests():
     def _post(*_args, **_kwargs):  # replaced per-test
         raise RequestExceptionStub("network disabled in tests")
 
+    def _get(*_args, **_kwargs):  # replaced per-test
+        raise RequestExceptionStub("network disabled in tests")
+
     stub.post = _post
+    stub.get = _get
     sys.modules["requests"] = stub
 
 
