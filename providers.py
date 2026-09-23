@@ -209,6 +209,56 @@ def _consume_stream(response, on_delta, stop_event=None):
     return message, usage
 
 
+def _normalize_message(raw):
+    """Force one assistant-message shape regardless of provider path.
+
+    Streaming builds this shape while consuming deltas; the non-streaming
+    branch trusts the relay, which sometimes sends ``content`` as ``None``
+    or a list of parts, or ``tool_calls[].function.arguments`` as a dict —
+    all of which break Blender property assignment later and used to kill
+    the polling timer (permanent busy spinner).
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    content = raw.get("content")
+    if isinstance(content, list):  # parts: [{"type": "text", "text": ...}]
+        chunks = []
+        for part in content:
+            if isinstance(part, str):
+                chunks.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                chunks.append(part["text"])
+        content = "".join(chunks)
+    elif not isinstance(content, str):
+        content = "" if content is None else str(content)
+
+    tool_calls = []
+    for call in raw.get("tool_calls") or ():
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        function = function if isinstance(function, dict) else {}
+        arguments = function.get("arguments")
+        if not isinstance(arguments, str):
+            try:
+                arguments = json.dumps(arguments or {})
+            except (TypeError, ValueError):
+                arguments = "{}"
+        tool_calls.append({
+            "id": call.get("id") or "call_%d" % (len(tool_calls) + 1),
+            "type": "function",
+            "function": {"name": function.get("name") or "",
+                         "arguments": arguments},
+        })
+
+    message = {"role": "assistant", "content": content}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    reasoning = raw.get("reasoning_content") or raw.get("reasoning")
+    if isinstance(reasoning, str) and reasoning:
+        message["reasoning_content"] = reasoning
+    return message
+
+
 def chat_completions(
     provider_id,
     api_key,
@@ -310,7 +360,7 @@ def chat_completions(
             message, usage = _consume_stream(response, on_delta, stop_event)
             return {"message": message, "usage": usage}
         data = response.json()
-        message = data["choices"][0]["message"]
+        message = _normalize_message(data["choices"][0]["message"])
         usage = data.get("usage", {})
     except ProviderError:
         raise

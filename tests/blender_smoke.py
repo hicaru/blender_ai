@@ -118,7 +118,7 @@ def scenario_code_gate(wm):
     bpy.ops.blender_ai.send()
     check("loop parked for approval", pump())
     check("code NOT executed yet", "EvilMesh" not in bpy.data.meshes)
-    check("pending code in panel", bool(wm.blender_ai_pending_code))
+    check("pending code in panel", (agent.pending_view() or {}).get("kind") == "code")
     check("status waits for approval", wm.blender_ai_status == "waiting for approval")
     from blender_ai.ui.operators import AI_OT_send
     check("send disabled while pending", not AI_OT_send.poll(bpy.context))
@@ -130,14 +130,14 @@ def scenario_code_gate(wm):
     tool_msgs = [m for m in wm.blender_ai_messages if m.role == "tool"]
     check("reject tool result", tool_msgs and "REJECTED" in tool_msgs[-1].content,
           tool_msgs[-1].content[:60] if tool_msgs else None)
-    check("pending box cleared", not wm.blender_ai_pending_code)
+    check("pending box cleared", agent.pending_view() is None)
 
     # --- approve branch
     calls["n"] = 0
     wm.blender_ai_input = "run some code again"
     bpy.ops.blender_ai.send()
     check("parked again", pump())
-    check("pending code shown", bool(wm.blender_ai_pending_code))
+    check("pending code shown", (agent.pending_view() or {}).get("kind") == "code")
     bpy.ops.blender_ai.approve_code()
     check("approve settled", pump())
     check("code executed after approve", "EvilMesh" in bpy.data.meshes)
@@ -167,13 +167,14 @@ def scenario_ask_user(wm):
     wm.blender_ai_input = "make a thing"
     bpy.ops.blender_ai.send()
     check("parked for question", pump())
-    check("question in panel", wm.blender_ai_ask_question == "Round or square?")
-    check("options in panel", wm.blender_ai_ask_options == '["round", "square"]')
+    view = agent.pending_view() or {}
+    check("question in panel", view.get("args", {}).get("question") == "Round or square?")
+    check("options in panel", view.get("args", {}).get("options") == ["round", "square"])
 
     op = bpy.ops.blender_ai.answer
     result = op(option="round")
     check("answer settled", result == {'FINISHED'} and pump())
-    check("ask fields cleared", not wm.blender_ai_ask_question)
+    check("ask fields cleared", agent.pending_view() is None)
     final = wm.blender_ai_messages[-1].content
     check("answer reached model", final == "You chose: round", final)
 
@@ -250,6 +251,42 @@ def scenario_reasoning(wm):
     check("new chat clears live tail", wm.blender_ai_live == "")
 
 
+def scenario_poll_keepalive(wm):
+    """Regression: a tool round must keep the poll loop alive.
+
+    _spawn() runs INSIDE the timer callback, where Blender still counts
+    _poll as registered; the continuation paths used to return None and
+    unregister the timer — provider finished, spinner stuck forever.
+    Headless here _poll is driven manually, so assert the return-value
+    contract directly (0.2 = keep looping, None = terminal).
+    """
+    print("- scenario: tool round keeps poll loop alive")
+    calls = {"n": 0}
+
+    def mock(provider_id, api_key, model, messages, tools=None,
+             temperature=0.4, timeout=90, thinking=False, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return mock_response(tool_calls=[tool_call("c1", "scene_info", {})])
+        return mock_response(content="done")
+
+    providers.chat_completions = mock
+    wm.blender_ai_input = "inspect the scene"
+    bpy.ops.blender_ai.send()
+
+    deadline = time.time() + 30
+    while time.time() < deadline and agent._STATE["result"] is None:
+        time.sleep(0.05)
+    ret = agent._poll()
+    check("continuation keeps loop alive", ret == 0.2, "got %r" % ret)
+    check("continuation spawned next round", agent._STATE["thread"] is not None)
+
+    check("second round settles", pump())
+    roles = [m.role for m in wm.blender_ai_messages]
+    check("full round history", roles == ["user", "assistant", "tool", "assistant"],
+          roles)
+
+
 def scenario_collapse(wm):
     print("- scenario: long messages collapse")
     providers.chat_completions = lambda *a, **k: mock_response(content="ok")
@@ -313,7 +350,6 @@ def scenario_extension_tools(wm):
         "kind": "code",
     }
     # approve through the same path the operator uses (no provider involved)
-    wm.blender_ai_ask_question = ""
     agent._STATE["messages"].append({"role": "assistant", "content": "",
                                      "approval": "pending"})
     bpy.ops.blender_ai.approve_code()
@@ -413,6 +449,9 @@ def main():
         bpy.ops.blender_ai.new_chat()
 
         scenario_collapse(wm)
+        bpy.ops.blender_ai.new_chat()
+
+        scenario_poll_keepalive(wm)
         bpy.ops.blender_ai.new_chat()
 
         scenario_reasoning(wm)

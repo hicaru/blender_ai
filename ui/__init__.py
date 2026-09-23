@@ -33,9 +33,6 @@ _WM_PROPS = (
     "blender_ai_input",
     "blender_ai_busy",
     "blender_ai_status",
-    "blender_ai_pending_code",
-    "blender_ai_ask_question",
-    "blender_ai_ask_options",
     "blender_ai_ask_answer",
     "blender_ai_show_all_tools",
     "blender_ai_live",
@@ -53,16 +50,6 @@ def register():
     )
     wm.blender_ai_busy = bpy.props.BoolProperty(default=False)
     wm.blender_ai_status = bpy.props.StringProperty(default="Ready.")
-    wm.blender_ai_pending_code = bpy.props.StringProperty(
-        name="Proposed code",
-    )
-    wm.blender_ai_ask_question = bpy.props.StringProperty(
-        name="Question",
-    )
-    wm.blender_ai_ask_options = bpy.props.StringProperty(
-        name="Options",
-        description="JSON list of answer options suggested by the agent",
-    )
     wm.blender_ai_ask_answer = bpy.props.StringProperty(
         name="Answer", maxlen=2000,
     )

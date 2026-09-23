@@ -21,7 +21,7 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
-from . import history, providers
+from . import debuglog, history, providers
 
 PACKAGE = __package__
 
@@ -221,22 +221,50 @@ def _on_load_post(_scene, _depsgraph):
 
 # --------------------------------------------------------------------------- agent loop
 
+def pending_view():
+    """Undo-proof snapshot of the parked call: None or {kind, name, args}.
+
+    WM props get reverted by Blender's undo (each tool dispatch pushes an
+    undo step), which used to blank the approve/answer boxes while the
+    loop stayed parked. The pending dict is the single source of truth;
+    panel and operators derive from it.
+    """
+    pending = _STATE["pending"]
+    if pending is None:
+        return None
+    call = pending["tool_call"]
+    try:
+        args = json.loads(call["function"]["arguments"])
+    except (ValueError, KeyError, TypeError):
+        args = {}
+    if not isinstance(args, dict):
+        args = {"code": str(args)}
+    return {
+        "kind": pending["kind"],
+        "name": call.get("function", {}).get("name", ""),
+        "args": args,
+    }
+
+
 def send_user_message(text):
     if is_busy() or has_pending():
         return
     text = text.strip()
     if not text:
         return
+    debuglog.log("send", chars=len(text))
     _STATE["empty_retries"] = 0
     _append(history.message("user", content=text))
 
     try:
         params = _request_params()
     except providers.ProviderError as exc:
+        debuglog.log("send error", error=str(exc))
         _append(history.message("error", content=str(exc)))
         return
 
     if not bpy.app.online_access:
+        debuglog.log("send blocked: online access disabled")
         _append(history.message(
             "error",
             content="Blender's online access is disabled. "
@@ -272,6 +300,7 @@ def _spawn(params):
     _STATE["stop_requested"] = False
     _STATE["result"] = None
     _STATE["params"] = dict(params)
+    debuglog.log("spawn", model=params["model"], messages=len(snapshot))
     # busy + live reset BEFORE the thread starts — a fast provider could
     # otherwise deliver deltas that the reset then wipes
     _set_busy(True)
@@ -308,7 +337,12 @@ def _worker(params, snapshot, tools, stop_event):
             stop_event=stop_event,
         )
         _STATE["result"] = result
+        message = result.get("message") or {}
+        debuglog.log("worker done",
+                     content=len(message.get("content") or ""),
+                     tool_calls=len(message.get("tool_calls") or []))
     except Exception as exc:  # noqa: BLE001 — worker must never raise into the void
+        debuglog.log("worker error", error=str(exc))
         if not stop_event.is_set():
             _STATE["result"] = {"error": str(exc)}
 
@@ -326,10 +360,30 @@ def _update_live_status():
 
 
 def _poll():
+    # A timer callback that raises is silently unregistered by Blender,
+    # which used to leave the spinner running forever. Fail loudly
+    # (chat + /tmp log) instead.
+    try:
+        return _poll_run()
+    except Exception as exc:  # noqa: BLE001 — the loop must end visibly
+        debuglog.log("poll crash", error="%s: %s" % (type(exc).__name__, exc))
+        try:
+            _append(history.message(
+                "error", content="internal error: %s: %s" % (type(exc).__name__, exc)))
+        except Exception:
+            pass
+        _set_busy(False)
+        _set_status("Error.")
+        return None
+
+
+def _poll_run():
     thread = _STATE["thread"]
     if thread is not None and thread.is_alive():
         if _STATE["stop_requested"]:
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                return 0.2  # stream still draining; keep polling
         else:
             _update_live_status()
             return 0.2
@@ -341,6 +395,7 @@ def _poll():
     _STATE["thread"] = None
 
     if _STATE["stop_requested"]:
+        debuglog.log("stopped by user")
         _set_busy(False)
         _set_status("Stopped.")
         return None
@@ -350,6 +405,7 @@ def _poll():
         return None
 
     if "error" in result:
+        debuglog.log("error surfaced", error=result["error"][:200])
         _append(history.message("error", content=result["error"]))
         _set_busy(False)
         _set_status("Error.")
@@ -375,9 +431,13 @@ def _apply_assistant_message(message):
             _STATE["empty_retries"] += 1
             params = dict(_STATE.get("params") or {})
             params["reasoning_effort"] = "off" if current == "low" else "low"
+            debuglog.log("empty answer: retry with lower reasoning effort")
             _set_status("retrying with lower reasoning effort…")
             _spawn(params)
-            return None
+            # _spawn ran INSIDE the timer callback: Blender still counts
+            # _poll as registered, and returning None would unregister it
+            # (spinner stuck forever). 0.2 keeps the timer alive.
+            return 0.2
         content = ("(Empty answer: the output token budget was most likely "
                    "consumed entirely by reasoning. Ask the user to lower "
                    "the Reasoning effort in preferences, then continue.)")
@@ -428,6 +488,8 @@ def _run_tool_calls(tool_calls):
 
         _set_status("running tool: %s" % name)
         outcome = executor.dispatch(name, arguments)
+        debuglog.log("tool dispatched", tool=name,
+                     pending=bool(outcome.get("pending")), ok=outcome.get("ok"))
 
         if outcome.get("pending"):
             # run_python awaiting user approval (or ask_user awaiting
@@ -436,6 +498,7 @@ def _run_tool_calls(tool_calls):
             # yet — the real result arrives on resolution.
             kind = outcome.get("kind", "ask")
             _STATE["pending"] = {"tool_call": call, "kind": kind}
+            debuglog.log("park for user", kind=kind, tool=name)
             if kind == "code":
                 assistant = _STATE["messages"][-1]
                 if assistant.get("role") == "assistant":
@@ -460,7 +523,9 @@ def _run_tool_calls(tool_calls):
         return None
     _set_status("thinking…")
     _spawn(params)
-    return None
+    # Same as the rescue path: we are inside the timer callback, so keep
+    # it registered for the next round (None would kill the loop).
+    return 0.2
 
 
 def resolve_pending(kind, payload):
@@ -471,7 +536,7 @@ def resolve_pending(kind, payload):
     call = pending["tool_call"]
     name = call.get("function", {}).get("name", "")
     _STATE["pending"] = None
-    wm = _wm()
+    debuglog.log("resolved", kind=kind, tool=name)
 
     if kind == "code":
         if payload == "approved":
@@ -496,12 +561,9 @@ def resolve_pending(kind, payload):
                     break
             result = ("REJECTED by user: do not run this code; "
                       "propose a different approach using the structural tools.")
-        wm.blender_ai_pending_code = ""
     else:  # ask
         result = payload
-        wm.blender_ai_ask_question = ""
-        wm.blender_ai_ask_options = ""
-        wm.blender_ai_ask_answer = ""
+        _wm().blender_ai_ask_answer = ""
 
     _append(history.message(
         "tool", content=result,
@@ -513,6 +575,7 @@ def resolve_pending(kind, payload):
     try:
         params = _request_params()
     except providers.ProviderError as exc:
+        debuglog.log("resume error", error=str(exc))
         _append(history.message("error", content=str(exc)))
         return
     _set_status("thinking…")
@@ -522,6 +585,7 @@ def resolve_pending(kind, payload):
 # --------------------------------------------------------------------------- control
 
 def stop():
+    debuglog.log("stop requested")
     _STATE["stop_requested"] = True
     event = _STATE.get("stop_event")
     if event is not None:
@@ -543,9 +607,6 @@ def new_chat():
     _STATE["pending"] = None
     _STATE["empty_retries"] = 0
     wm = _wm()
-    wm.blender_ai_pending_code = ""
-    wm.blender_ai_ask_question = ""
-    wm.blender_ai_ask_options = ""
     wm.blender_ai_ask_answer = ""
     wm.blender_ai_live = ""
     scene = bpy.context.scene

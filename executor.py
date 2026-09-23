@@ -30,15 +30,6 @@ def _prefs():
     return addon.preferences if addon else None
 
 
-def _format_arguments(arguments):
-    """Human-readable summary of gated call arguments (for the panel)."""
-    import json
-    try:
-        return json.dumps(arguments, ensure_ascii=False, indent=1)
-    except (TypeError, ValueError):
-        return str(arguments)
-
-
 def dispatch(name, arguments, force=False):
     """Execute one tool call. Returns one of:
 
@@ -57,10 +48,6 @@ def dispatch(name, arguments, force=False):
 
     prefs = _prefs()
     if tool["approval"] == "code" and not force and not (prefs and prefs.auto_approve_code):
-        wm = bpy.context.window_manager
-        wm.blender_ai_pending_code = (
-            str(arguments.get("code", "")) or _format_arguments(arguments)
-        )
         return {"pending": True, "kind": "code"}
 
     if not bpy.app.background:

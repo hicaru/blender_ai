@@ -47,10 +47,6 @@ def ask_user(question, options=None, allow_free_text=True):
     agent loop (registry entry has pause=True) — the AI_OT_answer operator
     resumes it with the user's answer as the tool result.
     """
-    wm = bpy.context.window_manager
-    wm.blender_ai_ask_question = str(question)
-    wm.blender_ai_ask_options = json.dumps(list(options or []), ensure_ascii=False)
-    wm.blender_ai_ask_answer = ""
     return "asked the user: %s" % question
 
 

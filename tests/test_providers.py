@@ -76,6 +76,31 @@ class TestChatCompletions(unittest.TestCase):
         self.assertEqual(result["message"]["content"], "hi")
         self.assertEqual(result["usage"], {"total_tokens": 5})
 
+    def test_nonstream_message_normalized(self):
+        # Relays sometimes send content as null / a list of parts and
+        # function arguments as a dict; the message must come back in the
+        # streaming shape regardless (raw shapes used to crash the Blender
+        # UI timer, leaving a permanent busy spinner).
+        _install_post(body={"choices": [{"message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "he"}],
+            "tool_calls": [{
+                "id": "call9", "type": "function",
+                "function": {"name": "scene_info", "arguments": {"depth": 1}},
+            }],
+        }}]})
+        message = providers.chat_completions("zai", "k", "glm-4.6", [])["message"]
+        self.assertEqual(message["content"], "he")
+        self.assertEqual(message["tool_calls"][0]["function"]["arguments"],
+                         '{"depth": 1}')
+
+        _install_post(body={"choices": [{"message": {
+            "role": "assistant", "content": None,
+        }}]})
+        message = providers.chat_completions("zai", "k", "glm-4.6", [])["message"]
+        self.assertEqual(message["content"], "")
+        self.assertNotIn("tool_calls", message)
+
     def test_no_tools_field_when_none(self):
         _install_post(body={"choices": [{"message": {"role": "assistant",
                                                      "content": ""}}]})

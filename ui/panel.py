@@ -6,7 +6,8 @@ import textwrap
 import bpy
 
 from . import operators
-from .prefs import get_prefs
+from .. import agent
+from ..prefs import get_prefs
 
 _WRAP_WIDTH = 42
 _COLLAPSED_LINES = 3
@@ -63,33 +64,36 @@ class AI_PT_chat(bpy.types.Panel):
             self._draw_message(layout, index=i, item=item)
             i += 1
 
-        # 2. Gated action awaiting approval (generated code or install)
-        if wm.blender_ai_pending_code:
+        # 2+3. Parked tool call (code approval or question), derived from
+        # agent state — Blender's undo reverts WM props and used to blank
+        # these boxes while the loop stayed parked (deadlock).
+        pending = agent.pending_view()
+        if pending and pending["kind"] == "code":
             box = layout.box()
             box.label(text="Proposed action — review:", icon='SCRIPT')
             col = box.column(align=True)
-            for line in wm.blender_ai_pending_code.splitlines()[:30]:
+            args = pending["args"]
+            text = str(args.get("code", "")) or json.dumps(args, ensure_ascii=False, indent=1)
+            for line in text.splitlines()[:30]:
                 for chunk in textwrap.wrap(line, width=_WRAP_WIDTH) or [""]:
                     col.label(text=chunk)
             row = box.row(align=True)
             row.operator(operators.AI_OT_approve_code.bl_idname, icon='CHECKMARK')
             row.operator(operators.AI_OT_reject_code.bl_idname, icon='X')
 
-        # 3. Pending question to the user
-        if wm.blender_ai_ask_question:
+        if pending and pending["kind"] == "ask":
             box = layout.box()
             box.label(text="Question:", icon='QUESTION')
-            _draw_text_lines(box.column(align=True), _wrap_lines(wm.blender_ai_ask_question))
-            options = []
-            try:
-                options = json.loads(wm.blender_ai_ask_options)
-            except ValueError:
-                options = []
+            _draw_text_lines(
+                box.column(align=True),
+                _wrap_lines(str(pending["args"].get("question", ""))),
+            )
+            options = pending["args"].get("options")
             for option in options if isinstance(options, list) else []:
                 box.operator(
                     operators.AI_OT_answer.bl_idname,
-                    text=option,
-                ).option = option
+                    text=str(option),
+                ).option = str(option)
             box.prop(wm, "blender_ai_ask_answer", text="")
             box.operator(operators.AI_OT_answer.bl_idname, text="Answer")
 

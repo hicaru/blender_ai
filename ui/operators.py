@@ -63,7 +63,7 @@ class AI_OT_approve_code(_ChatOperator, bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return agent.has_pending() and context.window_manager.blender_ai_pending_code
+        return (agent.pending_view() or {}).get("kind") == "code"
 
     def execute(self, context):
         agent.resolve_pending("code", "approved")
@@ -78,7 +78,7 @@ class AI_OT_reject_code(_ChatOperator, bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return agent.has_pending() and context.window_manager.blender_ai_pending_code
+        return (agent.pending_view() or {}).get("kind") == "code"
 
     def execute(self, context):
         agent.resolve_pending("code", "rejected")
@@ -97,7 +97,7 @@ class AI_OT_answer(_ChatOperator, bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return agent.has_pending() and bool(context.window_manager.blender_ai_ask_question)
+        return (agent.pending_view() or {}).get("kind") == "ask"
 
     def execute(self, context):
         wm = context.window_manager
