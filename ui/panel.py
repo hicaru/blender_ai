@@ -6,6 +6,7 @@ import textwrap
 import bpy
 
 from . import operators
+from .prefs import get_prefs
 
 _WRAP_WIDTH = 42
 _COLLAPSED_LINES = 3
@@ -98,9 +99,15 @@ class AI_PT_chat(bpy.types.Panel):
             expanded = wm.blender_ai_busy or wm.blender_ai_show_live
             box = layout.box()
             header = box.row(align=True)
+            label = "Thinking"
+            if wm.blender_ai_busy:
+                prefs = get_prefs()
+                level = getattr(prefs, "reasoning_effort", "") if prefs else ""
+                # live header shows the configured reasoning level
+                label = "Thinking (%s)" % level if level else "Thinking (live)"
             header.prop(
                 wm, "blender_ai_show_live",
-                text="Thinking" if not wm.blender_ai_busy else "Thinking (live)",
+                text=label,
                 icon='TRIA_DOWN' if expanded else 'TRIA_RIGHT',
                 toggle=True, emboss=False,
             )
