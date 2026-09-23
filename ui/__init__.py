@@ -28,6 +28,7 @@ _WM_PROPS = (
     "blender_ai_ask_question",
     "blender_ai_ask_options",
     "blender_ai_ask_answer",
+    "blender_ai_show_all_tools",
 )
 
 
@@ -53,6 +54,10 @@ def register():
     )
     wm.blender_ai_ask_answer = bpy.props.StringProperty(
         name="Answer", maxlen=2000,
+    )
+    wm.blender_ai_show_all_tools = bpy.props.BoolProperty(
+        name="Show full tool log",
+        default=False,
     )
 
 

@@ -9,9 +9,14 @@ from .. import agent
 from . import operators
 
 _WRAP_WIDTH = 42
-_TOOL_PREVIEW = 60
 _COLLAPSED_LINES = 3
 _COLLAPSE_HINT = 6  # messages with more wrapped lines than this get a toggle
+_TOOL_RUN_PREVIEW = 3  # tool-log tail shown before "… N earlier tool calls"
+_TOOL_PREVIEW = 60     # characters of a tool result shown per log line
+
+
+def _preview(content):
+    return (content[:_TOOL_PREVIEW] + "…") if len(content) > _TOOL_PREVIEW else content
 
 _ROLE_LABELS = {
     "user": "You",
@@ -42,11 +47,21 @@ class AI_PT_chat(bpy.types.Panel):
         layout = self.layout
         wm = context.window_manager
 
-        # 1. Status row: animated ring while the agent is busy
-        row = layout.row(align=True)
-        if wm.blender_ai_busy:
-            row.progress(factor=agent.spinner_factor(), type='RING')
-        row.label(text=wm.blender_ai_status or "Ready.")
+        # 1. Messages (long ones collapse; runs of tool messages render as
+        #    a compact log so they don't flood the panel)
+        items = list(wm.blender_ai_messages)
+        i = 0
+        while i < len(items):
+            item = items[i]
+            if item.role == "tool":
+                j = i
+                while j < len(items) and items[j].role == "tool":
+                    j += 1
+                self._draw_tool_run(layout, wm, items[i:j])
+                i = j
+                continue
+            self._draw_message(layout, index=i, item=item)
+            i += 1
 
         # 2. Pending code awaiting approval
         if wm.blender_ai_pending_code:
@@ -78,39 +93,12 @@ class AI_PT_chat(bpy.types.Panel):
             box.prop(wm, "blender_ai_ask_answer", text="")
             box.operator(operators.AI_OT_answer.bl_idname, text="Answer")
 
-        # 4. Messages (long ones collapse to their first lines)
-        for index, item in enumerate(wm.blender_ai_messages):
-            if item.role == "tool":
-                preview = (item.content[:_TOOL_PREVIEW] + "…") if len(item.content) > _TOOL_PREVIEW else item.content
-                box = layout.box()
-                box.label(text="%s: %s" % (item.tool_name or "tool", preview))
-                continue
-            lines = _wrap_lines(item.content)
-            collapsible = len(lines) > _COLLAPSE_HINT
-            box = layout.box()
-            if item.role == "error":
-                box.alert = True
-            header = box.row(align=True)
-            if collapsible:
-                toggle = header.operator(
-                    operators.AI_OT_toggle_message.bl_idname,
-                    text="",
-                    icon='TRIA_DOWN' if not item.collapsed else 'TRIA_RIGHT',
-                    emboss=False,
-                )
-                toggle.index = index
-            header.label(text=_ROLE_LABELS.get(item.role, item.role))
-
-            body = box.column(align=True)
-            if collapsible and item.collapsed:
-                _draw_text_lines(body, lines[:_COLLAPSED_LINES])
-                body.label(text="… %d more lines" % (len(lines) - _COLLAPSED_LINES))
-            else:
-                _draw_text_lines(body, lines)
-            if item.approval == "pending":
-                box.label(text="(waiting for your approval)", icon='INFO')
-            elif item.approval == "rejected":
-                box.label(text="(rejected)", icon='X')
+        # 4. Status: right above the input so it stays visible while the
+        #    message list grows (the animated ring shows live activity)
+        row = layout.row(align=True)
+        if wm.blender_ai_busy:
+            row.progress(factor=agent.spinner_factor(), type='RING')
+        row.label(text=wm.blender_ai_status or "Ready.")
 
         # 5. Input
         layout.textbox(
@@ -126,6 +114,52 @@ class AI_PT_chat(bpy.types.Panel):
         col.operator(operators.AI_OT_stop.bl_idname, icon='PAUSE')
         col.enabled = wm.blender_ai_busy
         row.operator(operators.AI_OT_new_chat.bl_idname, icon='FILE_NEW')
+
+    def _draw_tool_run(self, layout, wm, run):
+        """Consecutive tool messages as a slim log; long runs fold to the tail."""
+        box = layout.box()
+        col = box.column(align=True)
+        shown = run if (len(run) <= _TOOL_RUN_PREVIEW or wm.blender_ai_show_all_tools) else run[-_TOOL_RUN_PREVIEW:]
+        for item in shown:
+            col.label(text="▸ %s: %s" % (item.tool_name or "tool", _preview(item.content)))
+        if len(run) > _TOOL_RUN_PREVIEW:
+            hidden = len(run) - _TOOL_RUN_PREVIEW
+            row = box.row(align=True)
+            row.prop(
+                wm, "blender_ai_show_all_tools",
+                text=("Hide tool log" if wm.blender_ai_show_all_tools
+                      else "… %d earlier tool calls" % hidden),
+                icon='TRIA_UP' if wm.blender_ai_show_all_tools else 'TRIA_DOWN',
+                toggle=True,
+            )
+
+    def _draw_message(self, layout, index, item):
+        lines = _wrap_lines(item.content)
+        collapsible = len(lines) > _COLLAPSE_HINT
+        box = layout.box()
+        if item.role == "error":
+            box.alert = True
+        header = box.row(align=True)
+        if collapsible:
+            toggle = header.operator(
+                operators.AI_OT_toggle_message.bl_idname,
+                text="",
+                icon='TRIA_DOWN' if not item.collapsed else 'TRIA_RIGHT',
+                emboss=False,
+            )
+            toggle.index = index
+        header.label(text=_ROLE_LABELS.get(item.role, item.role))
+
+        body = box.column(align=True)
+        if collapsible and item.collapsed:
+            _draw_text_lines(body, lines[:_COLLAPSED_LINES])
+            body.label(text="… %d more lines" % (len(lines) - _COLLAPSED_LINES))
+        else:
+            _draw_text_lines(body, lines)
+        if item.approval == "pending":
+            box.label(text="(waiting for your approval)", icon='INFO')
+        elif item.approval == "rejected":
+            box.label(text="(rejected)", icon='X')
 
 
 classes = (AI_PT_chat,)
