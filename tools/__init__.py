@@ -60,3 +60,4 @@ from . import materials  # noqa: E402,F401
 from . import uv         # noqa: E402,F401
 from . import sculpt     # noqa: E402,F401
 from . import interactive  # noqa: E402,F401
+from . import addons     # noqa: E402,F401

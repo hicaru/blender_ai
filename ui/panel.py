@@ -63,10 +63,10 @@ class AI_PT_chat(bpy.types.Panel):
             self._draw_message(layout, index=i, item=item)
             i += 1
 
-        # 2. Pending code awaiting approval
+        # 2. Gated action awaiting approval (generated code or install)
         if wm.blender_ai_pending_code:
             box = layout.box()
-            box.label(text="Proposed code — review:", icon='SCRIPT')
+            box.label(text="Proposed action — review:", icon='SCRIPT')
             col = box.column(align=True)
             for line in wm.blender_ai_pending_code.splitlines()[:30]:
                 for chunk in textwrap.wrap(line, width=_WRAP_WIDTH) or [""]:

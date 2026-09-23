@@ -30,21 +30,37 @@ def _prefs():
     return addon.preferences if addon else None
 
 
-def dispatch(name, arguments):
+def _format_arguments(arguments):
+    """Human-readable summary of gated call arguments (for the panel)."""
+    import json
+    try:
+        return json.dumps(arguments, ensure_ascii=False, indent=1)
+    except (TypeError, ValueError):
+        return str(arguments)
+
+
+def dispatch(name, arguments, force=False):
     """Execute one tool call. Returns one of:
 
     - ``{"ok": True,  "result": str}``
     - ``{"ok": False, "result": str}`` — errors as ERROR strings
     - ``{"pending": True, "kind": "code"|"ask"}`` — parked for the user
+
+    Gated tools (``approval="code"``) — ``run_python``, extension install /
+    uninstall — park until the user approves unless ``force=True`` (set by
+    :func:`execute_tool` after the user approved) or the auto-approve
+    preference is on.
     """
     tool = TOOL_REGISTRY.get(name)
     if tool is None:
         return {"ok": False, "result": "ERROR: unknown tool %r" % name}
 
     prefs = _prefs()
-    if tool["approval"] == "code" and not (prefs and prefs.auto_approve_code):
+    if tool["approval"] == "code" and not force and not (prefs and prefs.auto_approve_code):
         wm = bpy.context.window_manager
-        wm.blender_ai_pending_code = str(arguments.get("code", ""))
+        wm.blender_ai_pending_code = (
+            str(arguments.get("code", "")) or _format_arguments(arguments)
+        )
         return {"pending": True, "kind": "code"}
 
     if not bpy.app.background:
@@ -66,6 +82,12 @@ def dispatch(name, arguments):
         return {"pending": True, "kind": "ask"}
 
     return {"ok": True, "result": str(result)}
+
+
+def execute_tool(name, arguments):
+    """Run a gated tool after the user explicitly approved it (no re-gate)."""
+    outcome = dispatch(name, arguments, force=True)
+    return outcome.get("result", "")
 
 
 def execute_python(code):

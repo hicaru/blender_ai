@@ -228,6 +228,71 @@ def scenario_reasoning(wm):
                            for m in outbound))
 
 
+def scenario_extension_tools(wm):
+    print("- scenario: extension list + gated install/uninstall")
+    from blender_ai import executor
+    check("addon tools registered",
+          "list_extensions" in executor.TOOL_REGISTRY
+          and "install_extension" in executor.TOOL_REGISTRY
+          and "uninstall_extension" in executor.TOOL_REGISTRY)
+
+    listing = executor.dispatch("list_extensions", {"query": "blender"})
+    check("list_extensions finds blender_ai",
+          listing["ok"] and "bl_ext.user_default.blender_ai" in listing["result"],
+          listing["result"][:80])
+
+    # Build a tiny valid extension zip to install from disk.
+    import os
+    import tempfile
+    import zipfile
+    manifest = (
+        'schema_version = "1.0.0"\nid = "dummy_ext"\nversion = "0.0.1"\n'
+        'name = "Dummy Ext"\ntagline = "smoke test dummy"\n'
+        'maintainer = "smoke"\ntype = "add-on"\nblender_version_min = "4.2.0"\n'
+        'license = ["SPDX:GPL-3.0-or-later"]\n'
+    )
+    zpath = os.path.join(tempfile.gettempdir(), "blender_ai_dummy_ext.zip")
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("dummy_ext/blender_manifest.toml", manifest)
+        zf.writestr("dummy_ext/__init__.py",
+                    "bl_info = {'name': 'Dummy Ext'}\n"
+                    "def register():\n    pass\n"
+                    "def unregister():\n    pass\n")
+
+    # Gate closed: park, do not install.
+    outcome = executor.dispatch("install_extension", {"source": zpath})
+    check("install parked for approval",
+          outcome.get("pending") and outcome.get("kind") == "code")
+    mods = [m.__name__ for m in __import__("addon_utils").modules()
+            if m.__name__.endswith("dummy_ext")]
+    check("NOT installed before approve", not mods)
+
+    import json as _json
+    agent._STATE["pending"] = {
+        "tool_call": {"id": "call_inst", "type": "function",
+                      "function": {"name": "install_extension",
+                                   "arguments": _json.dumps({"source": zpath})}},
+        "kind": "code",
+    }
+    # approve through the same path the operator uses (no provider involved)
+    wm.blender_ai_ask_question = ""
+    agent._STATE["messages"].append({"role": "assistant", "content": "",
+                                     "approval": "pending"})
+    bpy.ops.blender_ai.approve_code()
+    check("approve settled", pump())
+
+    listing = executor.dispatch("list_extensions", {"query": "dummy"})
+    check("dummy installed", listing["ok"] and "dummy_ext" in listing["result"],
+          listing["result"][:120])
+
+    # uninstall (auto-approve pref is off in the fake prefs, so force it)
+    result = executor.execute_tool("uninstall_extension", {"module": "dummy_ext"})
+    check("uninstall ok", "uninstalled" in result, result)
+    mods = [m.__name__ for m in __import__("addon_utils").modules()
+            if m.__name__.endswith("dummy_ext")]
+    check("dummy gone", not mods)
+
+
 def scenario_error(wm):
     print("- scenario: provider error surfaces as error message")
 
@@ -247,6 +312,14 @@ def scenario_error(wm):
 def main():
     print("== blender_ai smoke ==")
     bpy.context.preferences.system.use_online_access = True  # agent guard
+
+    # If this addon is also installed+enabled as an extension in this
+    # Blender config, disable it for the run — otherwise two copies share
+    # the same operator/WM property names and quit-time unregister fails.
+    import addon_utils
+    for mod in addon_utils.modules():
+        if mod.__name__.endswith(".blender_ai"):
+            addon_utils.disable(mod.__name__, default_set=False)
 
     # From-source runs have no add-on preferences entry; inject a stand-in
     # so the agent loop and the approval gate are exercised end to end.
@@ -280,6 +353,9 @@ def main():
         bpy.ops.blender_ai.new_chat()
 
         scenario_reasoning(wm)
+        bpy.ops.blender_ai.new_chat()
+
+        scenario_extension_tools(wm)
         bpy.ops.blender_ai.new_chat()
 
         scenario_error(wm)

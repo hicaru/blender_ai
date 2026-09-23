@@ -394,13 +394,12 @@ def resolve_pending(kind, payload):
         if payload == "approved":
             from . import executor  # lazy — executes on the main thread
             arguments = json.loads(call["function"]["arguments"])
-            outcome = executor.execute_python(arguments.get("code", ""))
+            result = executor.execute_tool(name, arguments)
             # mark the assistant message as approved
             for msg in reversed(_STATE["messages"]):
                 if msg.get("approval") == "pending":
                     msg["approval"] = "ok"
                     break
-            result = outcome
         else:
             for msg in reversed(_STATE["messages"]):
                 if msg.get("approval") == "pending":
