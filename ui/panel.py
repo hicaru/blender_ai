@@ -5,7 +5,6 @@ import textwrap
 
 import bpy
 
-from .. import agent
 from . import operators
 
 _WRAP_WIDTH = 42
@@ -93,14 +92,7 @@ class AI_PT_chat(bpy.types.Panel):
             box.prop(wm, "blender_ai_ask_answer", text="")
             box.operator(operators.AI_OT_answer.bl_idname, text="Answer")
 
-        # 4. Status: right above the input so it stays visible while the
-        #    message list grows (the animated ring shows live activity)
-        row = layout.row(align=True)
-        if wm.blender_ai_busy:
-            row.progress(factor=agent.spinner_factor(), type='RING')
-        row.label(text=wm.blender_ai_status or "Ready.")
-
-        # 4b. Thinking box: streams live while busy, then stays in the
+        # 4. Thinking box: streams live while busy, then stays in the
         #     panel (collapsed, open on click) after the answer
         if wm.blender_ai_live:
             expanded = wm.blender_ai_busy or wm.blender_ai_show_live

@@ -137,11 +137,6 @@ def _stop_spinner():
                 area.tag_redraw()
 
 
-def spinner_factor():
-    """Animated factor for the panel's RING progress (0..1)."""
-    return (_SPINNER["t"] % 16) / 16.0
-
-
 # Messages longer than this many characters start collapsed in the panel.
 _COLLAPSE_THRESHOLD = 400
 
