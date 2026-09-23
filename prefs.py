@@ -161,9 +161,13 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "history_limit")
 
 
-def _prefs():
+def get_prefs():
     addon = bpy.context.preferences.addons.get(__package__)
     return addon.preferences if addon else None
+
+
+# legacy private alias
+_prefs = get_prefs
 
 
 def _worker(provider_id, api_key):
