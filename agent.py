@@ -17,7 +17,6 @@ thread. Pattern used here (docs.blender.org/api/5.2/info_gotchas_threading.html)
 
 import json
 import threading
-from pathlib import Path
 
 import bpy
 from bpy.app.handlers import persistent
@@ -39,18 +38,32 @@ _STATE = {
 }
 
 
-# --------------------------------------------------------------------------- paths
+# --------------------------------------------------------------------------- storage
 
-def chat_file():
-    """History file. Official per-extension user dir when installed as an
-    extension (``__package__`` = ``bl_ext.<repo>.<id>``); a temp dir fallback
-    when imported from sources (smoke tests, development)."""
+# Chat history is stored INSIDE the .blend file (scene custom property):
+# every project carries its own chat, an unsaved/new file starts a fresh
+# chat, and Save As naturally forks the history.
+_SCENE_KEY = "blender_ai_chat"
+
+
+def _persist():
+    scene = bpy.context.scene
+    if scene is None:
+        return
     try:
-        base = Path(bpy.utils.extension_path_user(package=PACKAGE))
+        scene[_SCENE_KEY] = history.to_json(_STATE["messages"])
+    except Exception:  # noqa: BLE001 — persistence must never break the chat
+        pass
+
+
+def restore_history():
+    scene = bpy.context.scene
+    raw = scene.get(_SCENE_KEY, "") if scene else ""
+    try:
+        _STATE["messages"] = history.from_json(raw) if raw else []
     except ValueError:
-        import tempfile
-        base = Path(tempfile.gettempdir()) / "blender_ai"
-    return base / "chat.json"
+        _STATE["messages"] = []
+    sync_ui()
 
 
 # --------------------------------------------------------------------------- prefs
@@ -177,19 +190,15 @@ def messages():
 def _append(msg):
     history.append(_STATE["messages"], msg)
     sync_ui()
-    try:
-        history.save(_STATE["messages"], chat_file())
-    except OSError:
-        pass
-
-
-def restore_history():
-    _STATE["messages"] = history.load(chat_file())
-    sync_ui()
+    _persist()
 
 
 @persistent
 def _on_load_post(_scene, _depsgraph):
+    # Opening (or creating) a file switches chats: reset the session —
+    # stop the worker, drop pending approvals — then load the history
+    # stored inside the freshly opened .blend (none for a new project).
+    new_chat()
     restore_history()
 
 
@@ -355,10 +364,7 @@ def _run_tool_calls(tool_calls):
                 if assistant.get("role") == "assistant":
                     assistant["approval"] = "pending"
                     sync_ui()
-                    try:
-                        history.save(_STATE["messages"], chat_file())
-                    except OSError:
-                        pass
+                    _persist()
             _set_busy(False)
             _set_status("waiting for approval" if kind == "code" else "waiting for your answer")
             return None
@@ -419,10 +425,7 @@ def resolve_pending(kind, payload):
         tool_name=name, tool_call_id=call.get("id", ""),
     ))
     sync_ui()
-    try:
-        history.save(_STATE["messages"], chat_file())
-    except OSError:
-        pass
+    _persist()
 
     try:
         params = _request_params()
@@ -460,10 +463,9 @@ def new_chat():
     wm.blender_ai_ask_question = ""
     wm.blender_ai_ask_options = ""
     wm.blender_ai_ask_answer = ""
-    try:
-        chat_file().unlink(missing_ok=True)
-    except OSError:
-        pass
+    scene = bpy.context.scene
+    if scene is not None and scene.get(_SCENE_KEY) is not None:
+        del scene[_SCENE_KEY]
     sync_ui()
     _set_status("Ready.")
 

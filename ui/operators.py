@@ -110,6 +110,27 @@ class AI_OT_answer(_ChatOperator, bpy.types.Operator):
         return {'FINISHED'}
 
 
+class AI_OT_paste_input(_ChatOperator, bpy.types.Operator):
+    """Append the clipboard text to the input box"""
+
+    bl_idname = "blender_ai.paste_input"
+    bl_label = "Paste"
+    bl_description = ("Insert the clipboard at the end of the input. "
+                      "Works with any keyboard layout")
+
+    def execute(self, context):
+        wm = context.window_manager
+        text = (wm.clipboard or "")
+        if not text.strip():
+            self.report({'WARNING'}, "Clipboard is empty")
+            return {'CANCELLED'}
+        current = wm.blender_ai_input
+        separator = "\n" if current and not current.endswith("\n") else ""
+        # StringProperty maxlen silently truncates at 4000
+        wm.blender_ai_input = (current + separator + text)[:4000]
+        return {'FINISHED'}
+
+
 class AI_OT_toggle_message(_ChatOperator, bpy.types.Operator):
     """Expand or collapse a long message"""
 
@@ -134,6 +155,7 @@ classes = (
     AI_OT_approve_code,
     AI_OT_reject_code,
     AI_OT_answer,
+    AI_OT_paste_input,
     AI_OT_toggle_message,
 )
 

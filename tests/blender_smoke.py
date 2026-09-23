@@ -5,8 +5,9 @@ Run:
 
 Covers: registration, the agent loop against a mock provider (structural
 tool call -> final answer), the run_python approval gate (code NOT executed
-until Approve; reject branch returns control to the agent), and chat.json
-persistence.
+until Approve; reject branch returns control to the agent), ask_user,
+per-file history (stored inside the .blend), and the extension management
+tools.
 
 The mock replaces ``providers.chat_completions``; the agent loop's timer is
 pumped manually because timers do not fire during ``--background`` scripts.
@@ -293,6 +294,31 @@ def scenario_extension_tools(wm):
     check("dummy gone", not mods)
 
 
+def scenario_perfile(wm):
+    print("- scenario: history is per-project-file")
+    import json as _json
+    scene = bpy.context.scene
+    check("history stored in .blend", "blender_ai_chat" in scene)
+    saved = _json.loads(scene["blender_ai_chat"])
+    check("scene history parses", isinstance(saved, list) and saved
+          and any(m.get("content") == "persist check" for m in saved))
+
+    # emulate opening a fresh project: no stored chat -> empty state
+    saved_value = scene.get("blender_ai_chat")
+    del scene["blender_ai_chat"]
+    agent.restore_history()
+    check("fresh project starts empty", len(wm.blender_ai_messages) == 0)
+
+    # emulate reopening the saved project: history comes back
+    scene["blender_ai_chat"] = saved_value
+    agent.restore_history()
+    check("reopen restores history", len(wm.blender_ai_messages) == len(saved))
+
+    # new_chat removes the stored chat from the file
+    bpy.ops.blender_ai.new_chat()
+    check("new chat clears stored history", "blender_ai_chat" not in scene)
+
+
 def scenario_error(wm):
     print("- scenario: provider error surfaces as error message")
 
@@ -360,16 +386,12 @@ def main():
 
         scenario_error(wm)
 
-        # persistence after everything
-        from blender_ai.agent import chat_file
+        # per-file persistence: history lives inside the .blend
         wm.blender_ai_input = "persist check"
         providers.chat_completions = mock
         bpy.ops.blender_ai.send()
         pump()
-        from blender_ai import history as hist
-        stored = hist.load(chat_file())
-        check("chat.json parses", isinstance(stored, list) and stored[0]["role"] == "user")
-        check("history trimmed <= limit", len(stored) <= 80)
+        scenario_perfile(wm)
     finally:
         blender_ai.unregister()
 
