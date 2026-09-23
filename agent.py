@@ -103,6 +103,31 @@ def _request_params():
     }
 
 
+# Reasoning tokens share the output budget (providers.py contract), so the
+# cap must scale with the effort level: at 8192 a high-effort model can
+# spend everything on reasoning and return empty content with no tool
+# calls (observed in debug logs).
+_MAX_TOKENS_BY_EFFORT: dict[str, int] = {
+    "": 8192,
+    "off": 8192,
+    "low": 8192,
+    "medium": 16384,
+    "high": 24576,
+    "xhigh": 32768,
+    "max": 32768,
+}
+_MAX_TOKENS_CAP: int = 65536
+
+
+def _resolve_max_tokens(params: dict) -> int:
+    """Output budget for a request: explicit override, else effort-scaled."""
+    override = int(params.get("max_tokens") or 0)
+    if override > 0:
+        return min(override, _MAX_TOKENS_CAP)
+    effort = str(params.get("reasoning_effort") or "")
+    return _MAX_TOKENS_BY_EFFORT.get(effort, 8192)
+
+
 # --------------------------------------------------------------------------- UI sync
 
 def _wm():
@@ -315,7 +340,9 @@ def _spawn(params):
     _STATE["stop_requested"] = False
     _STATE["result"] = None
     _STATE["params"] = dict(params)
-    debuglog.log("spawn", model=params["model"], messages=len(snapshot))
+    debuglog.log("spawn", model=params["model"], messages=len(snapshot),
+                 effort=params.get("reasoning_effort"),
+                 max_tokens=_resolve_max_tokens(params))
     # busy + live reset BEFORE the thread starts — a fast provider could
     # otherwise deliver deltas that the reset then wipes
     _set_busy(True)
@@ -347,6 +374,7 @@ def _worker(params, snapshot, tools, stop_event):
             tools=tools,
             temperature=params["temperature"],
             reasoning_effort=params["reasoning_effort"],
+            max_tokens=_resolve_max_tokens(params),
             stream=True,
             on_delta=on_delta,
             stop_event=stop_event,
@@ -463,7 +491,13 @@ def _apply_assistant_message(message):
             _STATE["empty_retries"] += 1
             params = dict(_STATE.get("params") or {})
             params["reasoning_effort"] = "off" if current == "low" else "low"
-            debuglog.log("empty answer: retry with lower reasoning effort")
+            # Two levers, one rescue: less reasoning AND a bigger output
+            # budget (doubled vs the old effort's allocation) so content
+            # and tool calls have room even if the model keeps thinking.
+            params["max_tokens"] = min(
+                2 * _MAX_TOKENS_BY_EFFORT.get(current, 8192), _MAX_TOKENS_CAP)
+            debuglog.log("empty answer: retry with lower reasoning effort",
+                         max_tokens=params["max_tokens"])
             _set_status("retrying with lower reasoning effort…")
             _spawn(params)
             # _spawn ran INSIDE the timer callback: Blender still counts
