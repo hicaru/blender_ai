@@ -147,12 +147,15 @@ def _consume_stream(response, on_delta, stop_event=None):
     Recognizes ``reasoning_content`` (DeepSeek, Z.ai) and ``reasoning``
     (OpenRouter) reasoning deltas plus incremental tool_calls. A set
     ``stop_event`` (user pressed Stop) raises :class:`ProviderCancelled`
-    immediately, closing the connection. Returns ``(message, usage)``.
+    immediately, closing the connection. Returns ``(message, usage,
+    finish_reason)``; ``finish_reason`` is the last non-empty value seen
+    ("stop", "length", "tool_calls", …) and "" when the stream sent none.
     """
     content_parts = []
     reasoning_parts = []
     tool_calls = {}
     usage = {}
+    finish_reason = ""
     for raw in response.iter_lines():
         if stop_event is not None and stop_event.is_set():
             raise ProviderCancelled("stream stopped by user")
@@ -176,6 +179,9 @@ def _consume_stream(response, on_delta, stop_event=None):
         choices = event.get("choices") or []
         if not choices:
             continue
+        chunk_finish = choices[0].get("finish_reason")
+        if chunk_finish:
+            finish_reason = str(chunk_finish)
         delta = choices[0].get("delta") or {}
         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
         if isinstance(reasoning, str) and reasoning:
@@ -206,7 +212,7 @@ def _consume_stream(response, on_delta, stop_event=None):
         message["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:
         message["tool_calls"] = [tool_calls[key] for key in sorted(tool_calls)]
-    return message, usage
+    return message, usage, finish_reason
 
 
 def _normalize_message(raw):
@@ -277,7 +283,10 @@ def chat_completions(
 ):
     """POST ``{base_url}/chat/completions`` and return a normalized dict.
 
-    Returns ``{"message": <assistant message dict>, "usage": <dict>}``.
+    Returns ``{"message": <assistant message dict>, "usage": <dict>,
+    "finish_reason": <str>}`` ("stop", "length", "tool_calls", …; ""
+    when the provider sent none — "length" means the output budget was
+    exhausted mid-answer and the caller should auto-continue).
     The message dict contains ``role``, ``content`` and, when the model
     decided to call tools, ``tool_calls`` (list of
     ``{"id", "type": "function", "function": {"name", "arguments"}}``).
@@ -357,11 +366,12 @@ def chat_completions(
 
     try:
         if stream:
-            message, usage = _consume_stream(response, on_delta, stop_event)
-            return {"message": message, "usage": usage}
+            message, usage, finish_reason = _consume_stream(response, on_delta, stop_event)
+            return {"message": message, "usage": usage, "finish_reason": finish_reason}
         data = response.json()
         message = _normalize_message(data["choices"][0]["message"])
         usage = data.get("usage", {})
+        finish_reason = str(data["choices"][0].get("finish_reason") or "")
     except ProviderError:
         raise
     except (ValueError, KeyError, IndexError, TypeError) as exc:
@@ -369,4 +379,4 @@ def chat_completions(
     finally:
         _close_response(response)
 
-    return {"message": message, "usage": usage}
+    return {"message": message, "usage": usage, "finish_reason": finish_reason}

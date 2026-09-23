@@ -271,6 +271,40 @@ class TestListModels(unittest.TestCase):
         self.assertEqual(_CAPTURED["json"]["stream"], True)
         self.assertIn(("reasoning", "ing"), deltas)
         self.assertIn(("content", "Hello"), deltas)
+        # the terminal finish_reason is surfaced for the harness
+        self.assertEqual(result["finish_reason"], "tool_calls")
+
+    def test_streaming_surfaces_length_cutoff(self):
+        """finish_reason=length must reach the result (auto-continue lever)."""
+        def sse(obj):
+            return "data: " + _json.dumps(obj)
+
+        sse_lines = [
+            sse({"choices": [{"delta": {"content": "partial answer"}}]}),
+            sse({"choices": [{"delta": {}, "finish_reason": "length"}]}),
+            "data: [DONE]",
+        ]
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def iter_lines(self):
+                return iter(sse_lines)
+
+        requests = providers.requests
+        _CAPTURED.clear()
+
+        def fake_post(url, headers=None, json=None, timeout=None, stream=False):
+            return FakeResponse()
+
+        requests.post = fake_post
+        self.addCleanup(lambda: setattr(requests, "post", requests.post))
+
+        result = providers.chat_completions(
+            "deepseek", "k", "deepseek-flash", [], stream=True)
+        self.assertEqual(result["finish_reason"], "length")
+        self.assertEqual(result["message"]["content"], "partial answer")
 
 
 if __name__ == "__main__":

@@ -40,6 +40,9 @@ _STATE = {
     # one automatic retry with lowered reasoning effort per user message
     # when a thinking model spends the whole output budget on reasoning
     "empty_retries": 0,
+    # bounded auto-continues per user message when the provider cut the
+    # answer off at the output limit (finish_reason == "length")
+    "continues": 0,
 }
 
 
@@ -117,6 +120,8 @@ _MAX_TOKENS_BY_EFFORT: dict[str, int] = {
     "max": 32768,
 }
 _MAX_TOKENS_CAP: int = 65536
+# how many length-cutoff continuations one user message may chain
+_MAX_CONTINUES: int = 3
 
 
 def _resolve_max_tokens(params: dict) -> int:
@@ -293,6 +298,7 @@ def send_user_message(text):
         return
     debuglog.log("send", chars=len(text))
     _STATE["empty_retries"] = 0
+    _STATE["continues"] = 0
     _append(history.message("user", content=text))
 
     try:
@@ -383,7 +389,8 @@ def _worker(params, snapshot, tools, stop_event):
         message = result.get("message") or {}
         debuglog.log("worker done",
                      content=len(message.get("content") or ""),
-                     tool_calls=len(message.get("tool_calls") or []))
+                     tool_calls=len(message.get("tool_calls") or []),
+                     finish=str(result.get("finish_reason") or ""))
     except Exception as exc:  # noqa: BLE001 — worker must never raise into the void
         debuglog.log("worker error", error=str(exc))
         if not stop_event.is_set():
@@ -471,10 +478,11 @@ def _poll_run():
         _set_status("Error.")
         return None
 
-    return _apply_assistant_message(result.get("message", {}))
+    return _apply_assistant_message(
+        result.get("message", {}), str(result.get("finish_reason") or ""))
 
 
-def _apply_assistant_message(message):
+def _apply_assistant_message(message, finish_reason=""):
     tool_calls = message.get("tool_calls") or []
     content = message.get("content") or ""
     # DeepSeek returns reasoning_content; OpenRouter normalizes to reasoning.
@@ -507,6 +515,34 @@ def _apply_assistant_message(message):
         content = ("(Empty answer: the output token budget was most likely "
                    "consumed entirely by reasoning. Ask the user to lower "
                    "the Reasoning effort in preferences, then continue.)")
+
+    if (not tool_calls and finish_reason == "length"
+            and content and not content.startswith("(Empty answer")
+            and _STATE["continues"] < _MAX_CONTINUES):
+        # Output budget exhausted mid-answer: standard harness behavior is
+        # to commit the partial answer, nudge the model and go on instead
+        # of stalling. History grows monotonically, so the next request
+        # carries the partial answer plus the continuation nudge and
+        # history.reconcile() keeps the protocol shape valid.
+        _STATE["continues"] += 1
+        _append(history.message(
+            "assistant", content=content, reasoning=reasoning,
+        ))
+        params = dict(_STATE.get("params") or {})
+        budget = int(params.get("max_tokens") or 8192)
+        params["max_tokens"] = min(max(budget * 2, 16384), _MAX_TOKENS_CAP)
+        _append(history.message(
+            "user",
+            content="(Output token limit reached mid-answer. Continue "
+                    "exactly where you stopped; do not repeat what you "
+                    "already wrote.)",
+        ))
+        debuglog.log("length cutoff: auto-continue", n=_STATE["continues"],
+                     max_tokens=params["max_tokens"])
+        _set_status("continuing (%s/%s)…" % (_STATE["continues"], _MAX_CONTINUES))
+        _spawn(params)
+        # keep the polling timer registered (see rescue note above)
+        return 0.2
 
     _append(history.message(
         "assistant", content=content, tool_calls=tool_calls or None,
@@ -675,6 +711,7 @@ def new_chat():
     _STATE["messages"] = []
     _STATE["pending"] = None
     _STATE["empty_retries"] = 0
+    _STATE["continues"] = 0
     wm = _wm()
     wm.blender_ai_ask_answer = ""
     wm.blender_ai_live = ""
