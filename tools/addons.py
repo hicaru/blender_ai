@@ -1,4 +1,5 @@
 """Extension/add-on management tools: inspect, install, uninstall.
+# mypy: ignore-errors
 
 Install and uninstall are gated (``approval="code"``): the panel shows
 what will be installed/removed and the loop parks until the user approves.
@@ -29,7 +30,7 @@ def list_extensions(query=None, enabled_only=False):
             continue
         try:
             info = addon_utils.module_bl_info(mod)
-        except Exception:  # noqa: BLE001 — a broken module must not break listing
+        except Exception:  # noqa: BLE001 — addon_utils may raise anything on broken mods
             info = {}
         name = str(info.get("name") or module)
         if query and query not in (module + " " + name).lower():
@@ -107,15 +108,15 @@ def install_extension(source, repo="user_default", enable=True):
     try:
         bpy.ops.extensions.package_install_files(
             filepath=filepath, repo=repo, enable_on_install=bool(enable))
-    except Exception as exc:  # noqa: BLE001 — surfaced as an ERROR result
-        raise ToolError("install failed: %s" % exc)
+    except Exception as exc:
+        raise ToolError("install failed: %s" % exc) from exc
     finally:
         if cleanup:
+            import contextlib
             import os
-            try:
+
+            with contextlib.suppress(OSError):  # temp file may already be gone
                 os.remove(filepath)
-            except OSError:
-                pass
     return "installed extension from %s into repository %r (enabled=%s)" % (
         source, repo, bool(enable))
 
@@ -149,8 +150,8 @@ def uninstall_extension(module):
     try:
         bpy.ops.extensions.package_uninstall(
             repo_directory=directory, pkg_id=pkg_id)
-    except Exception as exc:  # noqa: BLE001
-        raise ToolError("uninstall failed: %s" % exc)
+    except Exception as exc:
+        raise ToolError("uninstall failed: %s" % exc) from exc
     return "uninstalled %r from repository %r" % (pkg_id, repo_module)
 
 

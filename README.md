@@ -1,45 +1,63 @@
 # Blender AI
 
-An AI chat agent that builds 3D models *inside* Blender. You describe what you
-want in plain language; the agent reasons, calls Blender tools (create objects,
-apply modifiers, assign materials, edit UVs, sculpt, manage addons), runs the
-generated Python in your scene, and iterates until the result is right.
+An AI agent that builds **game-ready 3D assets** *inside* Blender. You describe
+what you want in plain language ("make a low-poly pine tree for Godot"); the
+agent follows a staged pipeline — brief → blockout → shape → color → UV →
+validate → LOD/collision → export — calls Blender tools, checks its own work
+(numeric validation + a rendered contact sheet), and writes an engine-ready
+GLB/FBX with correct naming, origins, and metadata.
 
 Implemented as a native Blender extension (Blender 4.2+ extension manifest,
 tested against 5.2).
 
 ## Features
 
-- **Chat panel in the 3D View sidebar** (N-panel, "AI" tab): streaming answers,
-  collapsible message history, tool-call log previews.
-- **Real tool use, not code dumps** — the model calls registered tools
-  (`scene`, `materials`, `modifiers`, `uv`, `sculpt`, `addons`, `interactive`);
-  each tool runs on Blender's main thread with undo support.
-- **Code gate** — free-form Python suggested by the model is parked behind an
-  Approve / Reject dialog unless auto-approval is enabled in preferences.
-- **Repair loop** — when a round ends in an error, the agent automatically
-  retries with a bounded iteration budget (default 3). Each attempt is recorded
-  to `state.md` / `record.md` files; a live status + record preview is shown in
-  the panel. A user Stop always pauses the loop.
-- **Durable skill state** — failures and successful fixes are distilled into
-  merged, weight-ranked notes (JSON on disk, capped at 50) that are injected
-  into future requests, so the agent learns across sessions.
-- **Reasoning-effort aware budgets** — the output token cap scales with the
-  selected reasoning effort; if a thinking model exhausts the budget, the
-  request is retried with lower effort, and truncated answers are
-  auto-continued (bounded).
-- **Multiple providers** — Z.ai, DeepSeek and OpenRouter (OpenAI-compatible
-  chat completions, streamed), with model list fetching and per-provider API
-  keys.
-- **Conversation history** is stored in the `.blend` file, so chats survive
-  save/reload; history is trimmed to a preference cap before each request.
+- **Asset pipeline with a brief** — `set_asset_spec` pins the target engine
+  (glTF/Godot/Unity/Unreal), style, class, triangle budget and real-world size;
+  every later decision derives from it.
+- **Computed validation, every turn** — deterministic checks (budget, applied
+  scale, origin at base, flipped normals, non-manifold/loose geometry, n-gons,
+  missing UVs, glTF-unsafe materials, missing descriptions/colors, naming,
+  size vs spec) are recomputed from the scene and injected into the prompt with
+  exact fix hints; `export_asset` refuses to run while blocking issues remain.
+- **Visual self-check** — `capture_view` renders a 2×2 contact sheet
+  (Workbench, ~1–2 s) and shows it to the model and you in the panel.
+- **Object semantics** — every part carries `ai_description` / `ai_role` /
+  `ai_asset` custom properties (required by the create tools) and a color from
+  a deterministic palette; descriptions export as glTF `extras`.
+- **Per-object colors** — vertex-color mode (one shared material, `Col`
+  attribute → glTF `COLOR_0`) or per-part Principled materials; the viewport
+  switches to Object-color shading so parts stay readable in Solid mode.
+- **Skills** — 18+ built-in recipes (tree, rock, crate/barrel props, modular
+  kit, hard-surface, vehicles, furniture, terrain, characters, PBR presets,
+  LOD/collision and per-engine export guides). The index is always in the
+  prompt; bodies load on trigger match or via `load_skill`. Drop your own
+  `*.md` files (TOML front matter) into the user skills folder.
+- **Images** — attach concept art (file browser, clipboard, drag & drop);
+  images are downscaled to ≤1024 px and sent as multimodal parts; text-only
+  models get a captioning fallback via a configurable vision model.
+- **LODs + collision** — engine-correct naming automatically (`UCX_`/`UBX_` for
+  Unreal, `-colonly` for Godot, `_Collider` for Unity); Godot skips baked LODs
+  (the importer generates them).
+- **Chat panel in the 3D View sidebar** (N-panel, "AI" tab) with Pipeline /
+  Brief / Object / Chat / Skills sections: one-click Validate, Capture, LODs,
+  Collision, Export, and per-check Fix buttons — no LLM needed for those.
+- **Real tool use, not code dumps** — the model calls registered tools; each
+  tool runs on Blender's main thread with undo support. Free-form Python stays
+  parked behind an Approve / Reject gate.
+- **Repair loop + durable notes** — failed rounds retry with a bounded budget;
+  resolved failures are distilled into weight-ranked notes injected into
+  future requests.
+- **Reasoning-effort aware budgets, multiple providers** (Z.ai, DeepSeek,
+  OpenRouter; OpenAI-compatible streaming), history stored in the `.blend`.
 
 ## Requirements
 
 - Blender **5.2.0+** (extension manifest format).
 - An API key for at least one provider (Z.ai, DeepSeek or OpenRouter).
 - Network access — the add-on requests the `network` permission and sends chat
-  requests only to the provider you configure.
+  requests only to the provider you configure. It also requests `files` access
+  (attached images, skill notes, exported assets).
 
 ## Install
 
@@ -76,26 +94,27 @@ blender --command extension install-file -r user_default -e _work/blender_ai-<ve
    - pick a **Provider** (`zai`, `deepseek`, `openrouter`) and paste its **API key**;
    - **Fetch models** or type a model id; adjust temperature if needed.
 3. Optional:
-   - **Auto-approve code** — run generated Python without the confirm dialog
-     (off by default, recommended off for untrusted workflows).
-   - **Reasoning effort** — `off`/`low`/`medium`/`high`; higher values make the
-     model think more and get a larger output budget.
-   - **Repair loop bound** — max automatic retries after an errored round.
-   - **Skill store** — directory for durable notes and loop files; empty uses
-     `~/BlenderAI/skills`.
+   - **Export directory** — where GLB/FBX lands; empty uses an `exports`
+     folder next to the .blend.
+   - **Skills directory** — extra folder with user `*.md` skills (TOML front
+     matter: `name`, `description`, `triggers`, optional `tri_budget`).
+   - **Vision fallback** — provider/model used to caption attached images when
+     the main model has no vision input.
+   - **Tool profile** — `compact` drops sculpt/extension tools for smaller
+     models.
+   - **Auto-approve code**, **Reasoning effort**, **Repair loop bound**,
+     **Skill store** as before.
 
 ## Usage
 
-- Type a task ("make a low-poly lighthouse with a glowing lamp") and press
-  **Send**.
-- The agent thinks, calls tools and reports progress in the chat. Tool calls
-  are visible as log entries; generated code requires **Approve** unless
-  auto-approval is on.
-- **Stop** cancels the current round and pauses any active repair loop.
-- **New chat** starts a fresh conversation (history is kept in the scene until
-  then).
-- The **Repair loop** section shows live loop state (`state.md`) and the latest
-  record entries (`record.md`) from the skill store.
+1. Set a brief (form or chat): engine, style, class, size. Or just say
+   "make a wooden barrel for my godot game" — the agent derives it.
+2. The agent blockouts with real-world dimensions, shapes with modifiers,
+   colors every part, unwraps UVs, validates, looks at its own render, then
+   exports `exports/<Name>.glb|.fbx` — refusing to export while validation
+   has blocking issues.
+3. The Pipeline section shows stage progress, failing checks with one-click
+   **Fix**, and the latest capture thumbnail. Quick actions run without the LLM.
 
 ## How it works
 
@@ -111,18 +130,48 @@ blender --command extension install-file -r user_default -e _work/blender_ai-<ve
 
 ## Development
 
+Lint and type-check the strict modules (pipeline/, skills/, mesh_ops,
+pipeline tools, attachments, prompts — everything else carries an explicit
+`# mypy: ignore-errors` marker until migrated):
+
+```sh
+python3 -m ruff check .
+python3 -m mypy --strict .
+```
+
 Run the pure-Python test suite (no Blender needed):
 
 ```sh
-python3 -m unittest discover -s tests
+cd tests && python3 -m unittest discover -s .
 ```
 
-Run the headless smoke test (exercises the agent loop inside Blender with a
-sandboxed store):
+Run the headless smoke test (exercises the agent loop plus the whole
+pipeline — spec, blockout, validation, LODs, collision, capture, export —
+inside Blender with a sandboxed store):
 
 ```sh
 blender --background --factory-startup --python tests/blender_smoke.py
+# -> == SMOKE OK ==  (114 checks)
 ```
+
+### Scenario evals
+
+`tests/eval_cases.json` defines scenario cases (barrel, tree, sword, modular
+wall, ambiguity handling, validation-react behavior) with expected tool
+sequences. Run them against a live provider:
+
+```sh
+BLENDER_AI_API_KEY=... blender -b --factory-startup --python tests/run_evals.py -- \
+    --provider openrouter --model <model-id>
+# per-case results appended to tests/eval_results.jsonl (JSONL)
+```
+
+**Baseline (v0.2.0):** 41 tools registered; full-profile schema ~14k chars.
+Static prompt ~6.3k chars (one worked example, XML sections). Smoke: 114/114.
+Unit: 109/109. ruff: clean. mypy --strict (strict modules): clean.
+Provider-backed eval numbers are recorded per model in
+`tests/eval_results.jsonl` after the first live run — every prompt or
+tool-description change should move those numbers, not regress them.
 
 Rebuild after changes (see Option B above) and reinstall the fresh zip.
 

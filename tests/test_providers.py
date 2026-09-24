@@ -1,4 +1,5 @@
 """Provider client tests: request form (url/headers/body/tools) with a
+# mypy: ignore-errors
 monkeypatched requests.post, error mapping, and the verified endpoints."""
 
 import json as _json

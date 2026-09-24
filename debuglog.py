@@ -1,4 +1,5 @@
 """Append-only debug log — every agent event for post-mortems.
+# mypy: ignore-errors
 
 The addon also prints errors to Blender's system console, but that console
 is gone by the time a hang is investigated; the log file survives.

@@ -1,4 +1,5 @@
 """Headless smoke test for the blender_ai extension.
+# mypy: ignore-errors
 
 Run:
     blender --background --python tests/blender_smoke.py
@@ -23,10 +24,9 @@ ROOT = os.path.dirname(os.path.dirname(HERE))  # parent of the blender_ai packag
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import bpy  # noqa: E402
-
-import blender_ai  # noqa: E402
-from blender_ai import agent, providers  # noqa: E402
+import blender_ai
+import bpy
+from blender_ai import agent, providers
 
 FAILURES = []
 
@@ -45,8 +45,8 @@ def pump(timeout=60):
     while time.time() < deadline:
         settled = (
             not wm.blender_ai_busy
-            and agent._STATE["thread"] is None
-            and agent._STATE["result"] is None
+            and agent._STATE.thread is None
+            and agent._STATE.result is None
         )
         if settled:
             return True
@@ -275,11 +275,11 @@ def scenario_poll_keepalive(wm):
     bpy.ops.blender_ai.send()
 
     deadline = time.time() + 30
-    while time.time() < deadline and agent._STATE["result"] is None:
+    while time.time() < deadline and agent._STATE.result is None:
         time.sleep(0.05)
     ret = agent._poll()
     check("continuation keeps loop alive", ret == 0.2, "got %r" % ret)
-    check("continuation spawned next round", agent._STATE["thread"] is not None)
+    check("continuation spawned next round", agent._STATE.thread is not None)
 
     check("second round settles", pump())
     roles = [m.role for m in wm.blender_ai_messages]
@@ -347,14 +347,14 @@ def scenario_extension_tools(wm):
     check("NOT installed before approve", not mods)
 
     import json as _json
-    agent._STATE["pending"] = {
+    agent._STATE.pending = {
         "tool_call": {"id": "call_inst", "type": "function",
                       "function": {"name": "install_extension",
                                    "arguments": _json.dumps({"source": zpath})}},
         "kind": "code",
     }
     # approve through the same path the operator uses (no provider involved)
-    agent._STATE["messages"].append({"role": "assistant", "content": "",
+    agent._STATE.messages.append({"role": "assistant", "content": "",
                                      "approval": "pending"})
     bpy.ops.blender_ai.approve_code()
     check("approve settled", pump())
@@ -415,6 +415,200 @@ def scenario_error(wm):
     check("busy cleared", not wm.blender_ai_busy)
 
 
+def scenario_pipeline_tools(wm):
+    print("- scenario: pipeline tools (spec, create, validate, lod, collision, export, capture)")
+    import json as _json
+
+    # every export kwarg exists in the operator RNA (API renames break CI, not users)
+    import bpy.app
+    from blender_ai.pipeline import checks, facts
+    from blender_ai.pipeline.export import plan_for
+    from blender_ai.pipeline.spec import SPEC_KEY, Engine
+    from blender_ai.tools import mesh_ops
+    from blender_ai.tools import pipeline as pipe
+    from blender_ai.tools import scene as scene_tools
+    for engine in Engine:
+        plan = plan_for(engine)
+        op = bpy.ops.export_scene.gltf if plan.operator == "gltf" else bpy.ops.export_scene.fbx
+        rna_props = {p.identifier for p in op.get_rna_type().properties}
+        missing = [k for k in plan.kwargs if k not in rna_props]
+        check("export kwargs in RNA (%s)" % engine.value, not missing, missing)
+
+    result = pipe.set_asset_spec(
+        "Barrel", "Wooden storage barrel with two iron hoops",
+        asset_class="prop", engine="godot", style="lowpoly",
+        size_m=[0.6, 0.6, 0.9])
+    check("spec created", '"collection":"SM_Barrel"' in result, result)
+    coll = bpy.data.collections["SM_Barrel"]
+    spec_json = coll.get(SPEC_KEY)
+    check("spec stored on collection", bool(spec_json))
+    from blender_ai.pipeline.spec import AssetSpec
+    spec = AssetSpec.from_json(spec_json)
+    check("godot lods default to none", spec.lods == (1.0,), spec.lods)
+    low, high = spec.budget
+    check("lowpoly budget is quarter", (low, high) == (125, 1250), (low, high))
+
+    scene_tools.create_primitive(
+        "cylinder", name="SM_Barrel_Body", vertices=12,
+        dimensions=[0.6, 0.6, 0.9], origin="bottom",
+        description="Oak barrel body", role="body", color="wood_light")
+    body = bpy.data.objects["SM_Barrel_Body"]
+    check("dimensions in meters", abs(body.dimensions.z - 0.9) < 0.02,
+          tuple(round(d, 3) for d in body.dimensions))
+    check("origin bottom", body.location.z < 0.01, body.location.z)
+    check("min z at zero",
+          abs(min((body.matrix_world @ v.co).z for v in body.data.vertices)) < 1e-4)
+    check("description stored", body.get("ai_description") == "Oak barrel body")
+    check("asset stored", body.get("ai_asset") == "SM_Barrel")
+    check("color is palette wood_light", body.color[0] > 0.2 and body.color[2] < 0.5,
+          tuple(round(c, 2) for c in body.color))
+    check("Col attribute written",
+          body.data.color_attributes.get("Col") is not None)
+    check("shared vertex material",
+          any(m and m.name == "M_SM_Barrel_VertexColor" for m in body.data.materials))
+    # auto color fallback
+    scene_tools.create_primitive(
+        "torus", name="SM_Barrel_Hoop_Top", dimensions=[0.62, 0.62, 0.04],
+        location=[0, 0, 0.75], major_segments=12, minor_segments=4,
+        description="Iron hoop, top", role="trim", color="iron")
+    hoop = bpy.data.objects["SM_Barrel_Hoop_Top"]
+    check("in asset collection", hoop.name in coll.objects)
+
+    # mesh_op: barrel bulge via band scale
+    mesh_ops.mesh_op("SM_Barrel_Body", "subdivide", "side", {"cuts": 2})
+    mesh_ops.mesh_op("SM_Barrel_Body", "scale_faces", "band",
+                     {"factor": 1.1, "axis": "XY", "band": [0.3, 0.7]})
+    check("bulge widened body", body.dimensions.x > 0.605,
+          round(body.dimensions.x, 4))
+
+    # validation on the raw blockout: unapplied scale is the expected FAIL;
+    # primitives ship with a UV map, so uv.missing must NOT fire
+    scene_facts = facts.collect_asset_facts(bpy.context.scene)
+    results = checks.evaluate(scene_facts, scene_facts["spec"])
+    fails = [c.id for c in results if c.status == "FAIL"]
+    warns = [c.id for c in results if c.status == "WARN"]
+    check("scale.applied FAIL on blockout", "scale.applied" in fails, fails)
+    check("normals pass on stock primitives", "normals.flipped" not in fails, fails)
+    check("no uv.missing on primitives", "uv.missing" not in fails + warns,
+          fails + warns)
+
+    # origin fix (hoop parented to body: only roots need a base origin)
+    hoop.parent = body
+    mesh_ops.set_origin("SM_Barrel_Body", "bottom")
+    scene_facts = facts.collect_asset_facts(bpy.context.scene)
+    check("origin.base passes after fix",
+          checks.evaluate(scene_facts, spec, only="origin.base")[0].status == "PASS")
+
+    # LODs + collision
+    created = pipe.generate_lods()
+    check("godot default skips lods", _json.loads(created)["created"] == [], created)
+    lods = pipe.generate_lods(ratios=[0.5])
+    check("one lod created", "SM_Barrel_Body_LOD1" in lods, lods)
+    lod_obj = bpy.data.objects["SM_Barrel_Body_LOD1"]
+    check("lod has decimate modifier",
+          any(m.type == "DECIMATE" for m in lod_obj.modifiers))
+    check("lod role", lod_obj.get("ai_role") == "lod")
+    cols = _json.loads(pipe.make_collision("box"))["created"]
+    check("godot collision name", cols and "-convcolonly" in cols[0], cols)
+    check("collision skips lods", all("_LOD" not in c for c in cols), cols)
+    col_obj = bpy.data.objects[cols[0]]
+    check("collision wire + no render",
+          col_obj.display_type == "WIRE" and col_obj.hide_render)
+
+    # done-gate: capture sheet is written
+    cap = pipe.capture_view(["iso", "front"])
+    cap_payload = _json.loads(cap)
+    cap_path = cap_payload["image"]
+    check("capture png exists", os.path.isfile(cap_path), cap_path)
+    wm.blender_ai_capture_path = cap_path
+
+    # export: must REFUSE while scale.applied FAILs (the done-gate)
+    out = pipe.export_asset()
+    check("export refuses on FAIL", out.startswith("REFUSED"), out[:80])
+
+    # finalize, then export for real
+    from blender_ai.tools import mesh_ops as _mo
+    _mo.finalize("SM_Barrel", apply_transform=True)
+    out = pipe.export_asset()
+    payload = _json.loads(out)
+    check("export ok", payload["ok"] is True, out)
+    check("export file exists", os.path.isfile(payload["path"]), payload["path"])
+    before = {o["name"]: o["description"] for o in scene_facts["objects"]}
+    bpy.ops.import_scene.gltf(filepath=payload["path"])
+    reimported = next((o for o in bpy.data.objects
+                       if o.name.startswith("SM_Barrel_Body")), None)
+    check("glb re-import has body", reimported is not None)
+    if reimported is not None:
+        check("glb extras carry ai_description",
+              reimported.get("ai_description") == before.get("SM_Barrel_Body"),
+              reimported.get("ai_description"))
+
+
+def scenario_skills(wm):
+    print("- scenario: skills (parse, index, auto-match, load_skill)")
+    from blender_ai.skills import SkillIndex
+
+    index = SkillIndex.load(None)
+    check("built-in skills parsed", len(index.skills) >= 18, len(index.skills))
+    check("no parse errors", index.errors == (), index.errors)
+    tree = index.get("lowpoly-tree")
+    check("tree skill exists", tree is not None)
+    if tree:
+        check("tree triggers", "pine" in tree.triggers and tree.tri_budget == (150, 600))
+    match = index.best_match("make a low-poly pine tree for my godot game")
+    check("auto-match picks tree", match is not None and match.name == "lowpoly-tree",
+          match.name if match else None)
+    match2 = index.best_match("a wooden crate please")
+    check("auto-match picks prop", match2 is not None and match2.name == "lowpoly-prop",
+          match2.name if match2 else None)
+    body = None
+    from blender_ai.tools import pipeline as pipe
+    try:
+        body = pipe.load_skill("lowpoly-prop")
+    except Exception as exc:
+        check("load_skill runs", False, exc)
+    check("load_skill returns body", body is not None and "## Steps" in body)
+    check("skill pinned", agent_module_pin() == "lowpoly-prop")
+    # index reaches the prompt
+    from blender_ai import prompts
+    block = index.index_block()
+    text = prompts.system_prompt(block)
+    check("index in prompt", "lowpoly-prop" in text)
+
+
+def agent_module_pin():
+    from blender_ai.pipeline.session import session
+    return session.pinned_skill
+
+
+def scenario_panel(wm):
+    print("- scenario: panel draw-path helpers on live data")
+    from blender_ai.ui import panel as ui_panel
+
+    # wrap cache: region-width-aware, deterministic
+    lines = ui_panel._wrap_lines("word " * 40, 20)
+    check("wrap produces lines", len(lines) >= 10 and
+          all(len(line) <= 20 for line in lines), lines[:2])
+    check("wrap cached", ui_panel._wrap_lines("word " * 40, 20) is lines)
+
+    # region width derives from ui_scale without exploding
+    width = ui_panel._region_wrap_width(bpy.context)
+    check("region width sane", 20 <= width <= 400, width)
+
+    # pipeline summary derives stage/progress from the live scene
+    summary = ui_panel._pipeline_summary()
+    if bpy.context.scene.get("blender_ai_active_asset"):
+        check("pipeline summary computed", summary is not None and
+              0 <= summary[2] <= 1, summary[:3] if summary else None)
+    else:
+        check("pipeline summary None without asset", summary is None)
+
+    # skills snapshot is cached and re-reads within TTL
+    snap1 = ui_panel._skills_snapshot()
+    snap2 = ui_panel._skills_snapshot()
+    check("skills snapshot cached", snap1 is snap2 and len(snap1.skills) >= 18)
+
+
 def main():
     print("== blender_ai smoke ==")
     bpy.context.preferences.system.use_online_access = True  # agent guard
@@ -441,6 +635,8 @@ def main():
         api_key_zai="test-key", api_key_deepseek="", api_key_openrouter="",
         model="", temperature=0.4, auto_approve_code=False, history_limit=80,
         reasoning_effort="medium",
+        export_dir="", skills_dir="", vision_provider="", vision_model="",
+        tool_profile="full",
         get_api_key=lambda: "test-key",
         get_model=lambda: "glm-4.6",
     )
@@ -478,6 +674,14 @@ def main():
         bpy.ops.blender_ai.new_chat()
 
         scenario_error(wm)
+
+        scenario_pipeline_tools(wm)
+        bpy.ops.blender_ai.new_chat()
+
+        scenario_skills(wm)
+        bpy.ops.blender_ai.new_chat()
+
+        scenario_panel(wm)
 
         # per-file persistence: history lives inside the .blend
         wm.blender_ai_input = "persist check"

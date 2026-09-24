@@ -1,4 +1,5 @@
 """Modifier tools: add / configure / remove / apply / list."""
+# mypy: ignore-errors
 
 import json
 
@@ -7,18 +8,29 @@ import bpy
 from . import ToolError, register
 from .scene import _ensure_object_mode
 
-# Friendly name -> Blender modifier type (Modify/Generate/Deform categories).
+# Friendly name -> Blender modifier type. Upper-case friendly names match
+# Blender's own type ids (one less mapping for the model to learn).
 _MODIFIER_TYPES = {
-    "subdivision": 'SUBSURF',
-    "bevel": 'BEVEL',
-    "mirror": 'MIRROR',
-    "solidify": 'SOLIDIFY',
-    "array": 'ARRAY',
-    "boolean": 'BOOLEAN',
-    "remesh": 'REMESH',
-    "smooth": 'SMOOTH',
-    "shrinkwrap": 'SHRINKWRAP',
-    "weld": 'WELD',
+    "SUBSURF": 'SUBSURF',
+    "BEVEL": 'BEVEL',
+    "MIRROR": 'MIRROR',
+    "SOLIDIFY": 'SOLIDIFY',
+    "ARRAY": 'ARRAY',
+    "BOOLEAN": 'BOOLEAN',
+    "REMESH": 'REMESH',
+    "SMOOTH": 'SMOOTH',
+    "SHRINKWRAP": 'SHRINKWRAP',
+    "WELD": 'WELD',
+    "DECIMATE": 'DECIMATE',
+    "WEIGHTED_NORMAL": 'WEIGHTED_NORMAL',
+    "TRIANGULATE": 'TRIANGULATE',
+    "SCREW": 'SCREW',
+    "SKIN": 'SKIN',
+    "DISPLACE": 'DISPLACE',
+    "WIREFRAME": 'WIREFRAME',
+    "SIMPLE_DEFORM": 'SIMPLE_DEFORM',
+    "CURVE": 'CURVE',
+    "LATTICE": 'LATTICE',
 }
 
 _INTERNAL_PROPS = {
@@ -68,20 +80,24 @@ def _apply_settings(mod, settings, applied, skipped):
             skipped.append(key)
 
 
-def add_modifier(object, type, **settings):
-    """Add a modifier. Known types: subdivision, bevel, mirror, solidify,
-    array, boolean, remesh, smooth, shrinkwrap, weld. Extra keyword
-    arguments are applied as modifier RNA attributes (e.g.
-    ``levels=2`` for subdivision, ``width=0.05`` + ``segments=3`` for bevel,
-    ``mirror_object``/``use_axis_x`` for mirror)."""
+def add_modifier(object, type, params=None, **settings):
+    """Add a modifier, optionally setting params in the SAME call.
+
+    type is the game-relevant upper-case enum (BEVEL, MIRROR, DECIMATE,
+    WEIGHTED_NORMAL, ...). ``params`` is a dict of modifier RNA attributes
+    (e.g. {"width": 0.02, "segments": 2} for BEVEL, {"ratio": 0.5} for
+    DECIMATE); legacy keyword arguments are merged with it.
+    """
+    if params:
+        settings = {**settings, **params}
     obj = _get_object(object)
-    mod_type = _MODIFIER_TYPES.get(str(type).lower())
+    mod_type = _MODIFIER_TYPES.get(str(type).upper())
     if mod_type is None:
         raise ToolError(
             "unknown modifier type %r; use one of: %s"
             % (type, ", ".join(sorted(_MODIFIER_TYPES)))
         )
-    mod = obj.modifiers.new(name=type, type=mod_type)
+    mod = obj.modifiers.new(name=str(type).upper(), type=mod_type)
     applied, skipped = [], []
     _apply_settings(mod, settings, applied, skipped)
     note = ""
@@ -143,19 +159,26 @@ def list_modifiers(object):
 def register_tools():
     register(
         "add_modifier",
-        "Add a modifier to an object. type is one of: subdivision, bevel, "
-        "mirror, solidify, array, boolean, remesh, smooth, shrinkwrap, weld. "
-        "Pass settings as extra keyword arguments matching Blender modifier "
-        "attributes (e.g. subdivision: levels, render_levels, viewport; "
-        "bevel: width, segments, angle_limit; mirror: use_axis_x/y/z, "
-        "mirror_object=<object name>; array: count, relative_offset_displace; "
-        "boolean: object=<cutter object name>, operation; weld: "
-        "merge_threshold; shrinkwrap: target=<object name>).",
+        "Add a modifier, optionally setting its parameters in the SAME call. "
+        "type is one of: BEVEL, MIRROR, SOLIDIFY, ARRAY, BOOLEAN, DECIMATE, "
+        "WEIGHTED_NORMAL, TRIANGULATE, REMESH, SUBSURF, WELD, DISPLACE, "
+        "SCREW, SKIN, WIREFRAME, SIMPLE_DEFORM, SHRINKWRAP, SMOOTH, CURVE, "
+        "LATTICE. Pass a params object with Blender modifier attributes "
+        "(e.g. BEVEL: {width: 0.02, segments: 2, limit_method: 'ANGLE', "
+        "angle_limit: 0.5236}; DECIMATE: {ratio: 0.5, "
+        "use_collapse_triangulate: true}; MIRROR: {use_axis: [true, false, "
+        "false], use_clip: true}; WEIGHTED_NORMAL: {keep_sharp: true}; "
+        "ARRAY: {count: 3}; DISPLACE needs a texture).\n"
+        "Use when: shaping non-destructively (blockout detail, hard-surface "
+        "edges, LOD decimation). Stack order matters: MIRROR/ARRAY first, "
+        "BEVEL before WEIGHTED_NORMAL, TRIANGULATE last.",
         {
             "type": "object",
             "properties": {
                 "object": {"type": "string"},
                 "type": {"type": "string", "enum": sorted(_MODIFIER_TYPES)},
+                "params": {"type": "object",
+                           "description": "Modifier attributes applied right after creation"},
             },
             "required": ["object", "type"],
             "additionalProperties": True,

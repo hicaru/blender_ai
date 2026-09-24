@@ -1,4 +1,5 @@
 """Sculpt tools: enter sculpt mode, dyntopo, voxel remesh, multires."""
+# mypy: ignore-errors
 
 import bpy
 

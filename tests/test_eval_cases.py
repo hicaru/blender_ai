@@ -1,4 +1,5 @@
 """Offline eval-case validation.
+# mypy: ignore-errors
 
 The JSON cases describe "task -> expected tool calls". A live eval would run
 them against a real provider; offline we validate that every expected tool

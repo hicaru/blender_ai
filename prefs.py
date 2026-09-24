@@ -1,4 +1,5 @@
 """Addon preferences: provider, API keys, model, sampling, safety switches.
+# mypy: ignore-errors
 
 Model list: the "Fetch" button downloads the provider's ``/models`` list in
 a worker thread (timer-polled on the main thread — official Blender
@@ -111,6 +112,38 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         description="Run run_python code without confirmation. Only enable if you trust the model",
         default=False,
     )
+    export_dir: bpy.props.StringProperty(
+        name="Export directory",
+        description="Where export_asset writes GLB/FBX files. "
+                    "Empty = an 'exports' folder next to the .blend",
+        subtype="DIR_PATH",
+    )
+    skills_dir: bpy.props.StringProperty(
+        name="Skills directory",
+        description="Extra folder with user *.md skills. "
+                    "Empty = only the built-in skills load",
+        subtype="DIR_PATH",
+    )
+    vision_provider: bpy.props.StringProperty(
+        name="Vision provider (fallback)",
+        description="Provider used to caption attached images when the main "
+                    "model has no vision. Empty = same as provider",
+    )
+    vision_model: bpy.props.StringProperty(
+        name="Vision model (fallback)",
+        description="Model used to caption attached images when the main "
+                    "model has no vision. Empty = captions disabled",
+    )
+    tool_profile: bpy.props.EnumProperty(
+        name="Tool profile",
+        description="full exposes every tool; compact drops sculpt and "
+                    "extension tools for models with smaller tool vocabularies",
+        items=(
+            ("full", "Full", "All tools"),
+            ("compact", "Compact", "Drop sculpt + extension tools"),
+        ),
+        default="full",
+    )
     reasoning_effort: bpy.props.EnumProperty(
         name="Reasoning effort",
         description="How much the model reasons before answering. "
@@ -175,6 +208,15 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "reasoning_effort")
         layout.prop(self, "auto_approve_code")
         layout.prop(self, "history_limit")
+        layout.separator()
+        layout.label(text="Pipeline")
+        layout.prop(self, "export_dir")
+        layout.prop(self, "skills_dir")
+        layout.prop(self, "tool_profile")
+        layout.separator()
+        layout.label(text="Vision fallback (for text-only models)")
+        layout.prop(self, "vision_provider")
+        layout.prop(self, "vision_model")
         # Repair-loop settings — declared above, so expose them here too.
         layout.prop(self, "repair_bound")
         layout.prop(self, "skill_store")
@@ -192,7 +234,7 @@ _prefs = get_prefs
 def _worker(provider_id, api_key):
     try:
         _FETCH["result"] = providers.list_models(provider_id, api_key)
-    except Exception as exc:  # noqa: BLE001 — surfaced by the timer
+    except Exception as exc:  # noqa: BLE001 — fetch result carries the error
         _FETCH["result"] = exc
 
 

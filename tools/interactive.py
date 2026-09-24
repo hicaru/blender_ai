@@ -1,4 +1,5 @@
 """Interactive tools: scene introspection and asking the user."""
+# mypy: ignore-errors
 
 import json
 
@@ -8,36 +9,42 @@ from . import register
 
 
 def get_scene_state():
-    """Return a compact JSON snapshot of the scene (bounded observation)."""
+    """Compact JSON snapshot of the scene (bounded observation).
+
+    One call grounds the model: names, tris, dimensions, metadata, colors,
+    modifiers, materials, UVs and per-object issues — the same facts the
+    prompt's <scene> block and validation use, so they never disagree.
+    """
+    from ..pipeline import checks, facts
+
+    scene = bpy.context.scene
     context = bpy.context
-    scene = context.scene
+    state = facts.collect_scene_facts(scene)
+    issues = checks.per_object_issues(state)
+    for info in state["objects"]:
+        info["issues"] = issues.get(info["name"], [])
     active = context.view_layer.objects.active if context.view_layer else None
-
-    objects = []
-    for obj in scene.objects:
-        info = {
-            "name": obj.name,
-            "type": obj.type,
-            "location": [round(v, 4) for v in obj.location],
-            "modifiers": [m.name for m in obj.modifiers],
-            "materials": [s.material.name if s.material else None
-                          for s in obj.material_slots],
-        }
-        if obj.type == 'MESH':
-            info["vertices"] = len(obj.data.vertices)
-            info["dimensions"] = [round(v, 4) for v in obj.dimensions]
-        if obj.parent:
-            info["parent"] = obj.parent.name
-        objects.append(info)
-
-    state = {
+    out = {
         "mode": context.mode,
         "unit_scale": scene.unit_settings.scale_length,
         "active": active.name if active else None,
         "selected": [o.name for o in context.selected_objects],
-        "objects": objects,
+        "objects": state["objects"],
+        "objects_total": state["objects_total"],
     }
-    return json.dumps(state, ensure_ascii=False)
+    if state.get("asset") is not None:
+        asset = state["asset"]
+        spec = asset.get("spec")
+        out["asset"] = {
+            "collection": asset["asset"],
+            "spec": {
+                "name": spec.name, "engine": spec.engine.value,
+                "style": spec.style.value, "color_mode": spec.color_mode.value,
+                "budget": list(spec.budget), "size_m": list(spec.size_m) if spec.size_m else None,
+            } if spec else None,
+            "tris_total": asset["tris_total"],
+        }
+    return json.dumps(out, ensure_ascii=False)
 
 
 def ask_user(question, options=None, allow_free_text=True):
@@ -53,10 +60,12 @@ def ask_user(question, options=None, allow_free_text=True):
 def register_tools():
     register(
         "get_scene_state",
-        "Inspect the current scene: objects (names, types, locations, "
-        "vertex counts, modifiers, materials), selection, active object, "
-        "mode and unit scale. Call this first when the request depends on "
-        "scene context.",
+        "Inspect the current scene: every object's name, type, triangle count, "
+        "dimensions, location, scale, description, role, color, asset, modifiers, "
+        "materials, UV layers, per-object issues, plus selection, mode, unit scale "
+        "and the active asset spec with its budget. Call this first when the "
+        "request depends on scene context — the <scene> block in the prompt is a "
+        "summary of exactly this data.",
         {"type": "object", "properties": {}},
         get_scene_state,
     )

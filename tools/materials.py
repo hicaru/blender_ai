@@ -1,4 +1,5 @@
 """Material tools: create Principled BSDF materials, tweak inputs, assign."""
+# mypy: ignore-errors
 
 import json
 

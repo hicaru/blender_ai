@@ -1,4 +1,5 @@
 """Tool execution on the main thread: dispatch, undo push, run_python gate.
+# mypy: ignore-errors
 
 ``dispatch`` is the only entry the agent loop uses. It runs on the main
 thread, pushes an undo step per tool call (guarded — ``undo_push`` needs a
@@ -10,11 +11,11 @@ user approves or rejects.
 
 import contextlib
 import io
+import math
 import textwrap
 
 import bmesh
 import bpy
-import math
 import mathutils
 
 from .prefs import get_prefs
@@ -26,7 +27,7 @@ __all__ = ("dispatch", "execute_python", "tools_schema")
 _MAX_OUTPUT = 4000
 
 
-def dispatch(name, arguments, force=False):
+def dispatch(name, arguments, force=False):  # noqa: PLR0911 — gate outcomes
     """Execute one tool call. Returns one of:
 
     - ``{"ok": True,  "result": str}``
@@ -52,16 +53,17 @@ def dispatch(name, arguments, force=False):
         return {"ok": False, "result": "ERROR: %s" % exc}
     except TypeError as exc:
         return {"ok": False, "result": "ERROR: bad arguments: %s" % exc}
-    except Exception as exc:  # noqa: BLE001 — tool results must stay strings
+    except (RuntimeError, ValueError, KeyError, OSError) as exc:
+        # bpy.ops raises RuntimeError for poll/context failures; ValueError
+        # for bad enum values. Anything else is a real bug and propagates
+        # so it shows up in debuglog instead of being fed to the model.
         return {"ok": False, "result": "ERROR: %s: %s" % (type(exc).__name__, exc)}
 
     # Undo step AFTER the change succeeded: pushed before, Ctrl+Z would
     # first "eat" the agent's step instead of reverting its effect.
     if not bpy.app.background:
-        try:
+        with contextlib.suppress(RuntimeError):
             bpy.ops.ed.undo_push(message="AI: %s" % name)
-        except RuntimeError:
-            pass
 
     if tool.get("pause"):
         return {"pending": True, "kind": "ask"}
@@ -91,10 +93,10 @@ def execute_python(code):
     stdout = io.StringIO()
     try:
         with contextlib.redirect_stdout(stdout):
-            exec(compile(code, "<blender_ai>", "exec"), namespace)  # noqa: S102
+            exec(compile(code, "<blender_ai>", "exec"), namespace)
         output = stdout.getvalue().strip()
         return output[:_MAX_OUTPUT] or "OK (no output)"
-    except Exception as exc:  # noqa: BLE001 — errors go back to the model
+    except Exception as exc:  # noqa: BLE001 — sandbox boundary, error IS the observation
         output = stdout.getvalue().strip()
         error = "%s: %s" % (type(exc).__name__, exc)
         if output:

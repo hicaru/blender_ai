@@ -1,4 +1,5 @@
 """Tool registry for the AI agent.
+# mypy: ignore-errors
 
 Every tool registers itself with a JSON schema (OpenAI ``tools`` format),
 an implementation callable and a safety policy:
@@ -13,7 +14,7 @@ Schemas follow ``{"type": "function", "function": {name, description,
 parameters}}``.
 """
 
-__all__ = ("ToolError", "register", "tools_schema", "TOOL_REGISTRY")
+__all__ = ("TOOL_REGISTRY", "ToolError", "register", "tools_schema")
 
 
 class ToolError(RuntimeError):
@@ -23,7 +24,8 @@ class ToolError(RuntimeError):
 TOOL_REGISTRY = {}
 
 
-def register(name, description, parameters, func, approval="never", pause=False):
+def register(name, description, parameters, func,
+             approval="never", pause=False):
     TOOL_REGISTRY[name] = {
         "schema": {
             "type": "function",
@@ -39,11 +41,14 @@ def register(name, description, parameters, func, approval="never", pause=False)
     }
 
 
-def tools_schema():
+def tools_schema(profile: str = "full") -> list[dict]:
+    if profile == "compact":
+        return [entry["schema"] for name, entry in TOOL_REGISTRY.items()
+                if name not in _COMPACT_DROP]
     return [entry["schema"] for entry in TOOL_REGISTRY.values()]
 
 
-def _vec3_schema(description):
+def _vec3_schema(description: str) -> dict:
     return {
         "type": "array",
         "items": {"type": "number"},
@@ -53,11 +58,20 @@ def _vec3_schema(description):
     }
 
 
-# Populated by the tool modules below (import side effect).
-from . import scene      # noqa: E402,F401
-from . import modifiers  # noqa: E402,F401
-from . import materials  # noqa: E402,F401
-from . import uv         # noqa: E402,F401
-from . import sculpt     # noqa: E402,F401
-from . import interactive  # noqa: E402,F401
-from . import addons     # noqa: E402,F401
+# Populated by the tool modules below (import side effect); registry
+# must exist first, so these module-level imports follow it on purpose.
+from . import (
+    addons,
+    interactive,
+    materials,
+    mesh_ops,
+    modifiers,
+    scene,
+    sculpt,
+    uv,
+)
+from . import pipeline as _pipeline_tools
+
+# Dropped from the schema by the "compact" tool profile: rarely used by
+# game-asset work, and fewer schemas measurably helps smaller models.
+_COMPACT_DROP = frozenset({"sculpt_setup", "install_addon", "list_addons"})

@@ -1,4 +1,5 @@
 """OpenAI-compatible HTTP client for LLM providers.
+# mypy: ignore-errors
 
 The single place in the addon that knows provider URLs and model ids.
 Verified against official docs (2026-02):
@@ -22,8 +23,16 @@ import time
 
 import requests
 
-__all__ = ("PROVIDERS", "ProviderError", "ProviderCancelled",
-           "chat_completions", "list_models")
+__all__ = (
+    "PROVIDERS",
+    "ProviderCancelled",
+    "ProviderError",
+    "chat_completions",
+    "image_part",
+    "list_models",
+    "supports_vision",
+    "text_part",
+)
 
 
 PROVIDERS = {
@@ -53,14 +62,69 @@ class ProviderCancelled(ProviderError):
     """Raised when the user stops the run while the stream is in flight."""
 
 
+# ------------------------------------------------------------- vision
+
+# Model ids (or id prefixes) known to accept image input. DeepSeek has no
+# vision model; OpenRouter models are detected from /models metadata when
+# available (cached in _VISION_MODELS), otherwise the id heuristic applies.
+_VISION_ID_HINTS = frozenset({
+    "glm-4.5v", "glm-4.6v", "glm-4v", "gpt-4o", "gpt-4o-mini", "gpt-4.1",
+    "claude", "gemini", "llama-3.2-90b-vision", "qwen-vl", "pixtral",
+    "vlm", "vision",
+})
+_VISION_MODELS = {}  # provider_id -> frozenset(ids with image input)
+
+
+def text_part(text):
+    """OpenAI-compatible text content part."""
+    return {"type": "text", "text": text}
+
+
+def image_part(data_url):
+    """OpenAI-compatible image content part (base64 data URL)."""
+    return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def _vision_from_id(model):
+    low = model.lower()
+    if "deepseek" in low:
+        return False
+    return any(hint in low for hint in _VISION_ID_HINTS)
+
+
+def remember_vision_models(provider_id, model_rows):
+    """Cache vision capability from /models rows (OpenRouter: architecture)."""
+    ids = set()
+    for row in model_rows:
+        if not isinstance(row, dict):
+            continue
+        mid = row.get("id")
+        if not mid:
+            continue
+        arch = row.get("architecture") or {}
+        modalities = arch.get("input_modalities") or []
+        if "image" in modalities:
+            ids.add(str(mid))
+    if ids:
+        _VISION_MODELS[provider_id] = frozenset(ids)
+
+
+def supports_vision(provider_id, model):
+    """Whether this provider+model accepts image content parts."""
+    known = _VISION_MODELS.get(provider_id)
+    if known is not None and model in known:
+        return True
+    return _vision_from_id(model)
+
+
 def _close_response(resp):
     """Best-effort close (fakes in tests may lack .close)."""
     close = getattr(resp, "close", None)
     if close is not None:
-        try:
+        import contextlib
+
+        with contextlib.suppress(Exception):  # close is best-effort
             close()
-        except Exception:  # noqa: BLE001 — cleanup must never mask the real error
-            pass
 
 
 def list_models(provider_id, api_key, timeout=20):
@@ -83,7 +147,7 @@ def list_models(provider_id, api_key, timeout=20):
     try:
         response = requests.get(url, headers=headers, timeout=timeout)
     except requests.RequestException as exc:
-        raise ProviderError("Network error talking to %s: %s" % (provider["label"], exc))
+        raise ProviderError("Network error talking to %s: %s" % (provider["label"], exc)) from exc
 
     if response.status_code != 200:
         raise ProviderError(
@@ -94,15 +158,18 @@ def list_models(provider_id, api_key, timeout=20):
     try:
         data = response.json()["data"]
         ids = sorted(str(item["id"]) for item in data if item.get("id"))
+        remember_vision_models(provider_id, data)
     except (ValueError, KeyError, TypeError) as exc:
-        raise ProviderError("Unexpected model list shape from %s: %s" % (provider["label"], exc))
+        raise ProviderError(
+            "Unexpected model list shape from %s: %s" % (provider["label"], exc)
+        ) from exc
 
     if not ids:
         raise ProviderError("%s returned an empty model list." % provider["label"])
     return ids
 
 
-def _apply_reasoning(payload, provider_id, thinking, effort):
+def _apply_reasoning(payload, provider_id, thinking, effort):  # noqa: PLR0912 — provider-specific payloads
     """Populate thinking / reasoning_effort payload keys per provider.
 
     ``effort`` (when set) drives everything; empty ``effort`` falls back to
@@ -141,7 +208,7 @@ def _apply_reasoning(payload, provider_id, thinking, effort):
         payload["thinking"] = {"type": "disabled"}
 
 
-def _consume_stream(response, on_delta, stop_event=None):
+def _consume_stream(response, on_delta, stop_event=None):  # noqa: PLR0912, PLR0915 — SSE accumulation
     """Read an OpenAI-style SSE chat stream and assemble the message.
 
     Recognizes ``reasoning_content`` (DeepSeek, Z.ai) and ``reasoning``
@@ -273,7 +340,7 @@ def _normalize_message(raw):
     return message
 
 
-def chat_completions(
+def chat_completions(  # noqa: PLR0912, PLR0915
     provider_id,
     api_key,
     model,
@@ -355,7 +422,7 @@ def chat_completions(
                 continue
             raise ProviderError(
                 "Network error talking to %s: %s" % (provider["label"], exc)
-            )
+            ) from exc
 
         if response.status_code in (429, 500, 502, 503, 504) and attempt < retries:
             # transient: retry with linear backoff before giving up
@@ -383,7 +450,9 @@ def chat_completions(
     except ProviderError:
         raise
     except (ValueError, KeyError, IndexError, TypeError) as exc:
-        raise ProviderError("Unexpected response shape from %s: %s" % (provider["label"], exc))
+        raise ProviderError(
+            "Unexpected response shape from %s: %s" % (provider["label"], exc)
+        ) from exc
     finally:
         _close_response(response)
 

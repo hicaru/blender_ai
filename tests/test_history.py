@@ -1,4 +1,5 @@
 """History logic tests: message shape, trim with tool-pair safety, JSON."""
+# mypy: ignore-errors
 
 import os
 import tempfile

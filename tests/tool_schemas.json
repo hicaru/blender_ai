@@ -2,8 +2,360 @@
  {
   "type": "function",
   "function": {
+   "name": "list_extensions",
+   "description": "List installed Blender add-ons/extensions: module, name, version, enabled state. Use this to check whether an add-on is already installed before installing anything.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "Case-insensitive substring filter"
+     },
+     "enabled_only": {
+      "type": "boolean",
+      "default": false
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "install_extension",
+   "description": "Install a Blender extension (add-on) from a local .zip file path or a direct https URL to a .zip. Requires the user's approval: always confirm the source with ask_user before calling this. Check list_extensions first to avoid duplicates.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "source": {
+      "type": "string",
+      "description": "Local .zip path or https URL"
+     },
+     "repo": {
+      "type": "string",
+      "default": "user_default"
+     },
+     "enable": {
+      "type": "boolean",
+      "default": true
+     }
+    },
+    "required": [
+     "source"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "uninstall_extension",
+   "description": "Disable and remove an installed extension. Requires the user's approval: confirm with ask_user before calling this.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "module": {
+      "type": "string",
+      "description": "bl_ext.<repo>.<id> or plain id"
+     }
+    },
+    "required": [
+     "module"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "get_scene_state",
+   "description": "Inspect the current scene: every object's name, type, triangle count, dimensions, location, scale, description, role, color, asset, modifiers, materials, UV layers, per-object issues, plus selection, mode, unit scale and the active asset spec with its budget. Call this first when the request depends on scene context \u2014 the <scene> block in the prompt is a summary of exactly this data.",
+   "parameters": {
+    "type": "object",
+    "properties": {}
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "ask_user",
+   "description": "Ask the user a clarifying question and wait for their answer. Use when a requirement is ambiguous instead of guessing. Provide 2-4 concrete options when possible; allow_free_text lets the user type a custom answer.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "question": {
+      "type": "string"
+     },
+     "options": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "allow_free_text": {
+      "type": "boolean",
+      "default": true
+     }
+    },
+    "required": [
+     "question"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "create_material",
+   "description": "Create a material with a Principled BSDF (reuses an existing material with the same name). base_color_rgba is [r,g,b,a] in 0..1.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "base_color_rgba": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 4,
+      "description": "RGB or RGBA, 0..1 (alpha defaults to 1)"
+     },
+     "metallic": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "roughness": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "emission_strength": {
+      "type": "number",
+      "minimum": 0
+     }
+    },
+    "required": [
+     "name"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "set_material_params",
+   "description": "Set Principled BSDF inputs on a material. Keys are socket names (Base Color, Metallic, Roughness, Emission Strength, ...).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "material": {
+      "type": "string"
+     },
+     "params": {
+      "type": "object",
+      "description": "Socket name -> value"
+     }
+    },
+    "required": [
+     "material",
+     "params"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "assign_material",
+   "description": "Assign a material to an object (appends a new slot, or uses the given slot index).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "material": {
+      "type": "string"
+     },
+     "slot": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "object",
+     "material"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list_materials",
+   "description": "List material slot names of an object (JSON array).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "object"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "mesh_op",
+   "description": "Direct face-level mesh edit with bmesh: extrude, inset, bevel, scale_faces, subdivide, delete, recalc_normals, merge_by_distance, delete_loose, dissolve_degenerate, triangulate.\nUse when: shaping details that primitives+modifiers cannot express (barrel bulge, tapered tops, face cuts). Do not use when: a modifier (MIRROR, BEVEL, ARRAY, DECIMATE) can do it non-destructively.\nArgs: selector picks faces \u2014 all|top|bottom|side|band|+x|-x|+y|-y; band uses params.band=[lo,hi] as Z fractions of the bbox. params keys per op: extrude{distance}, inset{thickness,depth}, bevel{width,segments}, scale_faces{factor,axis:XY|Z|ALL,band}, subdivide{cuts}, merge_by_distance{distance}.\nReturns: {ok, op, object, selector, info}.\nExample: {\"object\":\"SM_Barrel_Body\",\"op\":\"scale_faces\",\"selector\":\"band\",\"params\":{\"factor\":1.08,\"axis\":\"XY\",\"band\":[0.3,0.7]}}",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string",
+      "description": "Mesh object name"
+     },
+     "op": {
+      "type": "string",
+      "enum": [
+       "bevel",
+       "delete",
+       "delete_loose",
+       "dissolve_degenerate",
+       "extrude",
+       "inset",
+       "merge_by_distance",
+       "recalc_normals",
+       "scale_faces",
+       "subdivide",
+       "triangulate"
+      ]
+     },
+     "selector": {
+      "type": "string",
+      "enum": [
+       "all",
+       "top",
+       "bottom",
+       "side",
+       "band",
+       "+x",
+       "-x",
+       "+y",
+       "-y"
+      ]
+     },
+     "params": {
+      "type": "object",
+      "description": "Op parameters (distance/thickness/width/segments/factor/axis/band/cuts)"
+     }
+    },
+    "required": [
+     "object",
+     "op"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "boolean",
+   "description": "Boolean operation of a cutter object into a target. Difference cuts the cutter out (windows, holes), union merges, intersect keeps the overlap.\nUse when: real holes through walls/panels. Do not use when: the shape can be modeled directly \u2014 booleans add messy topology.\nThe cutter stays as a wireframe object with role 'cutter' (hidden from render); with apply=false the modifier stays editable.\nReturns: {ok, object, cutter, operation, applied}.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "cutter": {
+      "type": "string",
+      "description": "Cutter mesh object name"
+     },
+     "operation": {
+      "type": "string",
+      "enum": [
+       "difference",
+       "union",
+       "intersect"
+      ]
+     },
+     "apply": {
+      "type": "boolean",
+      "description": "Apply the modifier now (default false)"
+     }
+    },
+    "required": [
+     "object",
+     "cutter"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "set_origin",
+   "description": "Move the object's origin without moving the mesh in world space: bottom (props: sits on the floor), center, corner (modular pieces snap on the grid corner), cursor (3D cursor position).\nUse when: the created primitive's origin is at its center but engines expect bottom-center.\nReturns: confirmation with the applied offset.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "bottom",
+       "center",
+       "corner",
+       "cursor"
+      ]
+     }
+    },
+    "required": [
+     "object"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "finalize",
+   "description": "Apply transforms (rotation/scale) and optionally modifiers on every mesh part of the asset before export. With apply_modifiers=true, copies of the un-applied objects are kept in a hidden '_backup' collection.\nUse when: validate_asset reports scale.applied FAIL or before export. Do not use when: still iterating the shape \u2014 keep modifiers live.\nReturns: {ok, finalized, objects, applied_transform, applied_modifiers}.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "asset": {
+      "type": "string",
+      "description": "Asset collection name (default: active)"
+     },
+     "apply_transform": {
+      "type": "boolean",
+      "description": "Apply rotation+scale (default true)"
+     },
+     "apply_modifiers": {
+      "type": "boolean",
+      "description": "Apply modifiers destructively (default false)"
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
    "name": "create_primitive",
-   "description": "Create a mesh primitive. kind is one of: plane, cube, circle, uv_sphere, ico_sphere, cylinder, cone, torus, grid, monkey, quad_sphere (all-quads sphere, good for sculpting). rotation is XYZ Euler in DEGREES. The new object is selected and active.",
+   "description": "Create a mesh primitive with real-world dimensions, description and color: the ONE blockout tool. kind is one of: plane, cube, circle, uv_sphere, ico_sphere, cylinder, cone, torus, grid, monkey, quad_sphere (all-quads, good for sculpting).\nUse when: stage 1 blockout and simple detail volumes. Do not use when: editing existing geometry (mesh_op) or duplicating (duplicate_object).\nArgs notes: dimensions [x,y,z] METERS (preferred over scale); origin bottom places the base at location (props sit on the floor); vertices/segments/subdivisions cap resolution (cylinder 6-12 for low-poly); description is REQUIRED (one sentence: what it is, material, function); role body|detail|trim|foliage|trunk|wheel|handle; color is a palette key ('iron', 'wood_light', ...) or RGBA 0..1 \u2014 omitted colors auto-assign; collection defaults to the active asset collection.\nReturns: {ok, created, tris, dims, hint}.\nExample: {\"kind\":\"cylinder\",\"name\":\"SM_Barrel_Body\",\"vertices\":12,\"dimensions\":[0.6,0.6,0.9],\"origin\":\"bottom\",\"description\":\"Oak barrel body\",\"role\":\"body\",\"color\":\"wood_light\"}",
    "parameters": {
     "type": "object",
     "properties": {
@@ -25,7 +377,16 @@
      },
      "name": {
       "type": "string",
-      "description": "Object name"
+      "description": "SM_<Asset>_<Part>"
+     },
+     "dimensions": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Size in METERS [x,y,z]"
      },
      "location": {
       "type": "array",
@@ -34,7 +395,7 @@
       },
       "minItems": 3,
       "maxItems": 3,
-      "description": "World location XYZ"
+      "description": "World location XYZ (base point if origin=bottom)"
      },
      "rotation": {
       "type": "array",
@@ -52,11 +413,74 @@
       },
       "minItems": 3,
       "maxItems": 3,
-      "description": "Scale XYZ"
+      "description": "Scale XYZ (prefer dimensions)"
+     },
+     "origin": {
+      "type": "string",
+      "enum": [
+       "center",
+       "bottom"
+      ]
+     },
+     "description": {
+      "type": "string",
+      "description": "REQUIRED: what it is, material, function"
+     },
+     "role": {
+      "type": "string",
+      "enum": [
+       "body",
+       "detail",
+       "trim",
+       "foliage",
+       "trunk",
+       "wheel",
+       "handle"
+      ]
+     },
+     "color": {
+      "type": [
+       "string",
+       "array"
+      ],
+      "description": "Palette key or RGBA 0..1; auto if omitted"
+     },
+     "parent": {
+      "type": "string",
+      "description": "Parent object name"
+     },
+     "collection": {
+      "type": "string",
+      "description": "Target collection (default: active asset)"
+     },
+     "vertices": {
+      "type": "integer",
+      "description": "circle/cylinder/cone segment count"
+     },
+     "segments": {
+      "type": "integer",
+      "description": "uv_sphere segments"
+     },
+     "ring_count": {
+      "type": "integer",
+      "description": "uv_sphere rings"
+     },
+     "subdivisions": {
+      "type": "integer",
+      "description": "ico_sphere subdivision level"
+     },
+     "major_segments": {
+      "type": "integer",
+      "description": "torus main ring"
+     },
+     "minor_segments": {
+      "type": "integer",
+      "description": "torus tube"
      }
     },
     "required": [
-     "kind"
+     "kind",
+     "description"
     ]
    }
   }
@@ -65,7 +489,7 @@
   "type": "function",
   "function": {
    "name": "transform_object",
-   "description": "Set absolute location/rotation/scale of an object. rotation is XYZ Euler in DEGREES. Omitted axes stay unchanged (each parameter replaces the whole transform component).",
+   "description": "Set absolute location/rotation/scale of an object, or its exact real-world dimensions in meters. rotation is XYZ Euler in DEGREES. Omitted axes stay unchanged (each parameter replaces the whole transform component). dimensions IS the size in meters and is preferred over scale for blockouts.\nReturns: confirmation with the resulting dimensions.",
    "parameters": {
     "type": "object",
     "properties": {
@@ -99,6 +523,15 @@
       "minItems": 3,
       "maxItems": 3,
       "description": "New scale XYZ"
+     },
+     "dimensions": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Exact size in METERS [x,y,z]"
      }
     },
     "required": [
@@ -133,7 +566,7 @@
   "type": "function",
   "function": {
    "name": "duplicate_object",
-   "description": "Duplicate an object, optionally offsetting the copy by a vector.",
+   "description": "Duplicate an object with offset; the copy inherits description, role and color (description gets a suffix unless overridden).\nUse when: repeated parts (barrel hoops, chair legs, tree crowns).\nArgs: offset [x,y,z] meters; name for the copy (SM_<Asset>_<Part>).\nReturns: confirmation with both names.",
    "parameters": {
     "type": "object",
     "properties": {
@@ -148,6 +581,14 @@
       "minItems": 3,
       "maxItems": 3,
       "description": "Offset added to the copy location"
+     },
+     "name": {
+      "type": "string",
+      "description": "Name for the copy"
+     },
+     "description": {
+      "type": "string",
+      "description": "Override description"
      }
     },
     "required": [
@@ -182,7 +623,7 @@
   "type": "function",
   "function": {
    "name": "join_objects",
-   "description": "Join several mesh objects into the first one.",
+   "description": "Join several mesh objects into the first one; merged descriptions survive in the result's ai_description.\nUse when: same-material volumes become one mesh (hard-surface workflow). Do not use when: parts must stay separate (wheels, modular pieces, LODs).",
    "parameters": {
     "type": "object",
     "properties": {
@@ -191,7 +632,8 @@
       "items": {
        "type": "string"
       },
-      "minItems": 2
+      "minItems": 2,
+      "description": "First object absorbs the rest"
      }
     },
     "required": [
@@ -274,7 +716,7 @@
   "type": "function",
   "function": {
    "name": "set_shading",
-   "description": "Set smooth or flat shading on mesh objects.",
+   "description": "Set flat, smooth, or smooth-by-angle shading on mesh objects. Low-poly art wants flat; hard-surface wants smooth_by_angle (angle in degrees, default 30) \u2014 it marks sharp edges WITHOUT a modifier, so exports stay clean.\nReturns: confirmation with the affected objects.",
    "parameters": {
     "type": "object",
     "properties": {
@@ -285,13 +727,21 @@
       },
       "minItems": 1
      },
-     "smooth": {
-      "type": "boolean"
+     "mode": {
+      "type": "string",
+      "enum": [
+       "flat",
+       "smooth",
+       "smooth_by_angle"
+      ]
+     },
+     "angle": {
+      "type": "number",
+      "description": "Degrees for smooth_by_angle"
      }
     },
     "required": [
-     "objects",
-     "smooth"
+     "objects"
     ]
    }
   }
@@ -351,7 +801,7 @@
   "type": "function",
   "function": {
    "name": "add_modifier",
-   "description": "Add a modifier to an object. type is one of: subdivision, bevel, mirror, solidify, array, boolean, remesh, smooth, shrinkwrap, weld. Pass settings as extra keyword arguments matching Blender modifier attributes (e.g. subdivision: levels, render_levels, viewport; bevel: width, segments, angle_limit; mirror: use_axis_x/y/z, mirror_object; array: count, relative_offset_displace; boolean: object, operation; weld: merge_threshold).",
+   "description": "Add a modifier, optionally setting its parameters in the SAME call. type is one of: BEVEL, MIRROR, SOLIDIFY, ARRAY, BOOLEAN, DECIMATE, WEIGHTED_NORMAL, TRIANGULATE, REMESH, SUBSURF, WELD, DISPLACE, SCREW, SKIN, WIREFRAME, SIMPLE_DEFORM, SHRINKWRAP, SMOOTH, CURVE, LATTICE. Pass a params object with Blender modifier attributes (e.g. BEVEL: {width: 0.02, segments: 2, limit_method: 'ANGLE', angle_limit: 0.5236}; DECIMATE: {ratio: 0.5, use_collapse_triangulate: true}; MIRROR: {use_axis: [true, false, false], use_clip: true}; WEIGHTED_NORMAL: {keep_sharp: true}; ARRAY: {count: 3}; DISPLACE needs a texture).\nUse when: shaping non-destructively (blockout detail, hard-surface edges, LOD decimation). Stack order matters: MIRROR/ARRAY first, BEVEL before WEIGHTED_NORMAL, TRIANGULATE last.",
    "parameters": {
     "type": "object",
     "properties": {
@@ -361,17 +811,31 @@
      "type": {
       "type": "string",
       "enum": [
-       "array",
-       "bevel",
-       "boolean",
-       "mirror",
-       "remesh",
-       "shrinkwrap",
-       "smooth",
-       "solidify",
-       "subdivision",
-       "weld"
+       "ARRAY",
+       "BEVEL",
+       "BOOLEAN",
+       "CURVE",
+       "DECIMATE",
+       "DISPLACE",
+       "LATTICE",
+       "MIRROR",
+       "REMESH",
+       "SCREW",
+       "SHRINKWRAP",
+       "SIMPLE_DEFORM",
+       "SKIN",
+       "SMOOTH",
+       "SOLIDIFY",
+       "SUBSURF",
+       "TRIANGULATE",
+       "WEIGHTED_NORMAL",
+       "WELD",
+       "WIREFRAME"
       ]
+     },
+     "params": {
+      "type": "object",
+      "description": "Modifier attributes applied right after creation"
      }
     },
     "required": [
@@ -475,145 +939,6 @@
  {
   "type": "function",
   "function": {
-   "name": "create_material",
-   "description": "Create a material with a Principled BSDF (reuses an existing material with the same name). base_color_rgba is [r,g,b,a] in 0..1.",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "name": {
-      "type": "string"
-     },
-     "base_color_rgba": {
-      "type": "array",
-      "items": {
-       "type": "number"
-      },
-      "minItems": 3,
-      "maxItems": 4
-     },
-     "metallic": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1
-     },
-     "roughness": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1
-     },
-     "emission_strength": {
-      "type": "number",
-      "minimum": 0
-     }
-    },
-    "required": [
-     "name"
-    ]
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "set_material_params",
-   "description": "Set Principled BSDF inputs on a material. Keys are socket names (Base Color, Metallic, Roughness, Emission Strength, ...).",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "material": {
-      "type": "string"
-     },
-     "params": {
-      "type": "object",
-      "description": "Socket name -> value"
-     }
-    },
-    "required": [
-     "material",
-     "params"
-    ]
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "assign_material",
-   "description": "Assign a material to an object (appends a new slot, or uses the given slot index).",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "object": {
-      "type": "string"
-     },
-     "material": {
-      "type": "string"
-     },
-     "slot": {
-      "type": "integer"
-     }
-    },
-    "required": [
-     "object",
-     "material"
-    ]
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "list_materials",
-   "description": "List material slot names of an object (JSON array).",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "object": {
-      "type": "string"
-     }
-    },
-    "required": [
-     "object"
-    ]
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "uv_unwrap",
-   "description": "Unwrap UVs of a mesh object. method: smart (default, Smart UV Project), angle (seam/angle based unwrap) or cube (cube projection). angle_limit in degrees, island_margin in world units.",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "object": {
-      "type": "string"
-     },
-     "method": {
-      "type": "string",
-      "enum": [
-       "smart",
-       "angle",
-       "cube"
-      ]
-     },
-     "angle_limit": {
-      "type": "number",
-      "description": "Degrees (smart/angle)"
-     },
-     "island_margin": {
-      "type": "number"
-     }
-    },
-    "required": [
-     "object"
-    ]
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
    "name": "sculpt_setup",
    "description": "Prepare a mesh object for sculpting: switches to Sculpt Mode and optionally enables dynamic topology (enable_dyntopo + detail_size), voxel-remeshes the mesh (voxel_remesh + voxel_size) or adds a Multires modifier (multires_levels).",
    "parameters": {
@@ -650,38 +975,330 @@
  {
   "type": "function",
   "function": {
-   "name": "get_scene_state",
-   "description": "Inspect the current scene: objects (names, types, locations, vertex counts, modifiers, materials), selection, active object, mode and unit scale. Call this first when the request depends on scene context.",
+   "name": "uv_unwrap",
+   "description": "Unwrap UVs of one mesh or a batch (objects=[...]). method: smart (default), angle, conformal, cube, cylinder, lightmap (grid UV1 for Unity/Unreal lightmaps). pack=true packs islands into 0..1 with margin (default 0.01). angle_limit (degrees, smart), island_margin (world units, smart/angle).\nUse when: validate_asset reports uv.missing, or the engine needs lightmaps. Returns the unwrapped object names.",
    "parameters": {
     "type": "object",
-    "properties": {}
+    "properties": {
+     "object": {
+      "type": "string",
+      "description": "Single object name"
+     },
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Batch of object names (preferred)"
+     },
+     "method": {
+      "type": "string",
+      "enum": [
+       "smart",
+       "angle",
+       "conformal",
+       "cube",
+       "cylinder",
+       "lightmap"
+      ]
+     },
+     "angle_limit": {
+      "type": "number",
+      "description": "Degrees (smart only)"
+     },
+     "island_margin": {
+      "type": "number",
+      "description": "World units (smart/angle)"
+     },
+     "pack": {
+      "type": "boolean",
+      "description": "Pack islands into 0..1 after unwrap"
+     },
+     "margin": {
+      "type": "number",
+      "description": "Pack margin (default 0.01)"
+     }
+    }
    }
   }
  },
  {
   "type": "function",
   "function": {
-   "name": "ask_user",
-   "description": "Ask the user a clarifying question and wait for their answer. Use when a requirement is ambiguous instead of guessing. Provide 2-4 concrete options when possible; allow_free_text lets the user type a custom answer.",
+   "name": "set_asset_spec",
+   "description": "Create or update the asset brief: engine, style, color mode, class, triangle budget, real-world size. Creates the SM_<Name> collection and makes it active.\nUse when: starting ANY game asset \u2014 every later decision (detail level, colors, export settings) is derived from it. Do not use when: a spec already exists and only one field changes \u2014 pass just the fields to change (they are merged).\nArgs: asset_class small_prop|prop|hero_prop|environment|modular_piece|vehicle|character; engine gltf|godot|unity|unreal; style lowpoly|stylized|realistic; color_mode vertex_color|materials (default: vertex_color, materials for realistic); tri_budget [min,max] (default from class; lowpoly uses a quarter); size_m [x,y,z] meters.\nReturns: {ok, collection, budget, color_mode}.\nExample: {\"name\":\"Barrel\",\"description\":\"Wooden storage barrel, two iron hoops\",\"asset_class\":\"prop\",\"engine\":\"godot\",\"style\":\"lowpoly\",\"size_m\":[0.6,0.6,0.9]}",
    "parameters": {
     "type": "object",
     "properties": {
-     "question": {
-      "type": "string"
+     "name": {
+      "type": "string",
+      "description": "Asset name, becomes collection SM_<Name>"
      },
-     "options": {
+     "description": {
+      "type": "string",
+      "description": "What this asset is, 1 sentence"
+     },
+     "asset_class": {
+      "type": "string",
+      "enum": [
+       "small_prop",
+       "prop",
+       "hero_prop",
+       "environment",
+       "modular_piece",
+       "vehicle",
+       "character"
+      ]
+     },
+     "engine": {
+      "type": "string",
+      "enum": [
+       "gltf",
+       "godot",
+       "unity",
+       "unreal"
+      ]
+     },
+     "style": {
+      "type": "string",
+      "enum": [
+       "lowpoly",
+       "stylized",
+       "realistic"
+      ]
+     },
+     "color_mode": {
+      "type": "string",
+      "enum": [
+       "vertex_color",
+       "materials"
+      ]
+     },
+     "tri_budget": {
       "type": "array",
       "items": {
-       "type": "string"
-      }
+       "type": "integer"
+      },
+      "minItems": 2,
+      "maxItems": 2
      },
-     "allow_free_text": {
-      "type": "boolean",
-      "default": true
+     "size_m": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+     },
+     "lods": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "description": "Decimate ratios; default (1.0,0.5,0.25), Godot (1.0,)"
+     },
+     "collision": {
+      "type": "boolean"
      }
     },
     "required": [
-     "question"
+     "name",
+     "description"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "set_object_info",
+   "description": "Batch-set metadata and colors on existing objects: ai_description (what it is, material, function), ai_role (body|detail|trim|foliage|trunk|wheel|handle|collision|lod|socket|pivot), color (palette key like 'iron'/'wood_light' or RGBA 0..1 list; omitted colors are auto-assigned deterministically).\nUse when: validate_asset reports meta.description/meta.color FAILs, or the user asks to rename/recolor parts. Prefer one batch call over many single calls.\nReturns: {ok, updated:[names]}.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1
+     },
+     "description": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string"
+     },
+     "color": {
+      "type": [
+       "string",
+       "array"
+      ],
+      "description": "Palette key or [r,g,b,(a)] floats 0..1"
+     }
+    },
+    "required": [
+     "objects"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "validate_asset",
+   "description": "Run all deterministic game-asset checks: tri budget, applied scale, origin at base, flipped normals, non-manifold/loose/degenerate geometry, n-gons, missing UVs, glTF-unsafe materials, missing descriptions/colors, naming, size vs spec.\nUse when: after blockout and before saying 'done'; REQUIRED before export_asset. Do not use when: nothing changed since the last validation.\nReturns: {ok, fail:[...], warn:[...], tris, budget} \u2014 every entry carries an exact fix (a tool call you can issue directly).",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "asset": {
+      "type": "string",
+      "description": "Collection name (default: active)"
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "generate_lods",
+   "description": "Create LOD<i> duplicates with a DECIMATE modifier for every part of the active asset. Low-poly style gets a single 0.5 LOD; Godot skips LODs (importer generates them).\nUse when: stage 6 after validation passes. Do not use when: engine is godot or the asset is a modular piece.\nReturns: {ok, created:[names]}.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ratios": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "description": "Decimate ratios, default per style"
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "make_collision",
+   "description": "Create a collision proxy for every part: box (object-aligned bbox, default), convex (hull), or mesh (copy of the base mesh). Naming follows the target engine (UCX_/UBX_ for Unreal, -colonly/-convcolonly for Godot, _Collider for Unity); proxies are wireframe, hidden from render, role 'collision'.\nUse when: stage 6, unless spec.collision is false.\nReturns: {ok, created:[names]}.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "box",
+       "convex",
+       "mesh"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "export_asset",
+   "description": "Export the active asset to exports/<Name>.glb (gltf/godot) or .fbx (unity/unreal) with engine-exact settings; modifiers are baked by the exporter WITHOUT touching the working scene; ai_description reaches the file as glTF extras.\nUse when: the user asks for the finished file, and ONLY after validate_asset reports no FAILs \u2014 the tool refuses otherwise (force=true after ask_user confirmation overrides).\nReturns: {ok, path, bytes, tris, objects, engine}.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "asset": {
+      "type": "string",
+      "description": "Collection name (default: active)"
+     },
+     "force": {
+      "type": "boolean",
+      "description": "Export despite FAILs (ask_user first!)"
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "capture_view",
+   "description": "Render the active asset from up to 4 named views into ONE 2x2 contact sheet and attach it to your next message as an image.\nUse when: after validation \u2014 LOOK at your result before claiming done; catches floating parts, broken silhouettes and inverted faces no numeric check finds.\nArgs: views subset of iso|front|side|top; shading solid (object colors) or material.\nReturns: {ok, captured, views, image} + the image arrives with your next turn.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "views": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "iso",
+        "front",
+        "side",
+        "top"
+       ]
+      }
+     },
+     "size": {
+      "type": "integer",
+      "description": "Tile size px (default 512)"
+     },
+     "shading": {
+      "type": "string",
+      "enum": [
+       "solid",
+       "material"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "add_reference_image",
+   "description": "Place an image file into the scene as a reference Image Empty behind the geometry (front/side/top aligned, semi-transparent) so the blockout can match its silhouette.\nUse when: the user attached a concept image and you start blocking out. capture_view with the same view then shows both overlapped.\nReturns: {ok, reference, view, image_size}.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string",
+      "description": "Absolute image path (from an attachment)"
+     },
+     "view": {
+      "type": "string",
+      "enum": [
+       "front",
+       "side",
+       "top"
+      ]
+     },
+     "opacity": {
+      "type": "number",
+      "description": "0..1, default 0.5"
+     }
+    },
+    "required": [
+     "path"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "load_skill",
+   "description": "Load a named recipe from the skill library; returns the full body inside <active_skill> tags. The index with one-line descriptions is always in the system prompt.\nUse when: the request matches a skill (index line) OR the user names one. The skill stays active for the whole asset build.\nReturns: the skill body: Parts table, Steps (exact tool calls), Verify, Pitfalls.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "Skill name from the index"
+     }
+    },
+    "required": [
+     "name"
     ]
    }
   }

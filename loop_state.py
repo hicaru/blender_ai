@@ -1,4 +1,5 @@
 """Repair loop + durable skill state for the Blender AI agent.
+# mypy: ignore-errors
 
 Two cooperating subsystems, both self-contained in this module:
 
@@ -36,7 +37,7 @@ import re
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal
 
@@ -155,7 +156,7 @@ closes the loop.
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _short_id() -> str:

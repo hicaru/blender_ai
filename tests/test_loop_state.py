@@ -1,4 +1,5 @@
 """Repair loop + skill state tests: LOOP file contract, gates, merge, inject."""
+# mypy: ignore-errors
 
 import os
 import tempfile

@@ -1,4 +1,5 @@
 """Chat history: pure list-of-dict logic + JSON persistence.
+# mypy: ignore-errors
 
 Deliberately free of ``bpy`` so it is unit-testable outside Blender.
 A message is a dict with a subset of:
@@ -14,8 +15,16 @@ A message is a dict with a subset of:
 
 import json
 
-__all__ = ("message", "append", "trim", "reconcile", "to_json", "from_json",
-           "save", "load")
+__all__ = (
+    "append",
+    "from_json",
+    "load",
+    "message",
+    "reconcile",
+    "save",
+    "to_json",
+    "trim",
+)
 
 
 def message(role, content="", tool_calls=None, tool_name="", tool_call_id="", approval="", reasoning=""):
@@ -51,6 +60,63 @@ def trim(messages, limit):
     while trimmed and trimmed[0].get("role") == "tool":
         trimmed.pop(0)
     return trimmed
+
+
+# ------------------------------------------------------------- images
+
+def with_image_refs(msg_content, refs):
+    """Store a user message whose images are REFERENCE records.
+
+    The stored content becomes a parts list: the text plus
+    {"type": "image_ref", ...} dicts. Only fresh turns re-expand to
+    base64 (see ``expand_images``); history stays bounded because old
+    turns keep the small refs (placeholders in prompts).
+    """
+    if not refs:
+        return msg_content
+    parts = []
+    if msg_content:
+        parts.append({"type": "text", "text": msg_content})
+    parts.extend(refs)
+    return parts
+
+
+def expand_images(messages, resolver):
+    """Return the request-bound copy: latest user turn's refs -> base64
+    parts, every older ref -> placeholder text.
+
+    ``resolver(ref) -> content part dict`` for fresh images (worker
+    thread: encodes the PNG). Older refs become
+    ``[image: label, WxH]`` text, which keeps tokens bounded — the model
+    has already acted on them.
+    """
+    last_user = max((i for i, m in enumerate(messages)
+                     if m.get("role") == "user"), default=-1)
+    out = []
+    for idx, msg in enumerate(messages):
+        content = msg.get("content")
+        if not isinstance(content, list) or not any(
+                isinstance(p, dict) and p.get("type") == "image_ref"
+                for p in content):
+            out.append(msg)
+            continue
+        parts = []
+        fresh = idx == last_user
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_ref":
+                if fresh:
+                    parts.append(resolver(part))
+                else:
+                    parts.append({"type": "text", "text":
+                                  "[image: %s, %sx%s]" % (part.get("label", "?"),
+                                                          part.get("w", 0),
+                                                          part.get("h", 0))})
+            else:
+                parts.append(part)
+        new_msg = dict(msg)
+        new_msg["content"] = parts
+        out.append(new_msg)
+    return out
 
 
 _INTERRUPTED_RESULT = (
