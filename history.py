@@ -17,6 +17,7 @@ import json
 
 __all__ = (
     "append",
+    "compact",
     "from_json",
     "load",
     "message",
@@ -27,9 +28,15 @@ __all__ = (
 )
 
 
-def message(role, content="", tool_calls=None, tool_name="", tool_call_id="", approval="", reasoning=""):
-    """Build one history dict, omitting empty optional keys."""
+def message(role, content="", tool_calls=None, tool_name="", tool_call_id="", approval="", reasoning="", auto=False):
+    """Build one history dict, omitting empty optional keys.
+
+    ``auto`` marks harness-written user turns (continue nudges): they are
+    sent to the model but never count as the user's task.
+    """
     msg = {"role": role, "content": content}
+    if auto:
+        msg["auto"] = True
     if reasoning:
         msg["reasoning"] = reasoning
     if tool_calls:
@@ -59,7 +66,71 @@ def trim(messages, limit):
     trimmed = messages[-limit:] if limit > 0 else list(messages)
     while trimmed and trimmed[0].get("role") == "tool":
         trimmed.pop(0)
+    # The user's task must survive trimming: without it a long build
+    # forgets what it is building (observed: model drifted mid-build).
+    task = next((m for m in reversed(messages)
+                 if m.get("role") == "user" and not m.get("auto")), None)
+    if task is not None and not any(m is task for m in trimmed):
+        trimmed.insert(0, task)
     return trimmed
+
+
+_CODE_TOOLS = frozenset({"build_model"})
+_OMITTED_CODE = "# (older version omitted - the newest build_model call below is current)"
+_KEEP_FULL_RESULTS = 8
+_OLD_RESULT_CHARS = 600
+
+
+def compact(messages):
+    """Request-bound copy with old bulk shrunk (input untouched).
+
+    - build_model scripts: only the newest call per model keeps its code
+      (each call sends the FULL script, so older ones are superseded);
+    - tool results older than the last few are cut to a short head.
+    """
+    newest = {}
+    for idx, msg in enumerate(messages):
+        for call in msg.get("tool_calls") or ():
+            fn = call.get("function", {}) if isinstance(call, dict) else {}
+            if fn.get("name") in _CODE_TOOLS:
+                newest[_model_of(fn)] = (idx, call.get("id"))
+    keep_ids = {call_id for _idx, call_id in newest.values()}
+    tool_idx = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    old_results = set(tool_idx[:-_KEEP_FULL_RESULTS])
+    out = []
+    for idx, msg in enumerate(messages):
+        content = msg.get("content")
+        if msg.get("tool_calls"):
+            out.append({**msg, "tool_calls": [_strip_code(c, keep_ids)
+                                              for c in msg["tool_calls"]]})
+        elif (idx in old_results and isinstance(content, str)
+              and len(content) > _OLD_RESULT_CHARS):
+            out.append({**msg, "content": content[:_OLD_RESULT_CHARS] + " …(truncated)"})
+        else:
+            out.append(msg)
+    return out
+
+
+def _model_of(fn):
+    try:
+        args = json.loads(fn.get("arguments") or "{}")
+    except ValueError:
+        return ""
+    return str(args.get("name", "")) if isinstance(args, dict) else ""
+
+
+def _strip_code(call, keep_ids):
+    fn = call.get("function", {}) if isinstance(call, dict) else {}
+    if fn.get("name") not in _CODE_TOOLS or call.get("id") in keep_ids:
+        return call
+    try:
+        args = json.loads(fn.get("arguments") or "{}")
+    except ValueError:
+        return call
+    if not isinstance(args, dict) or "code" not in args:
+        return call
+    args["code"] = _OMITTED_CODE
+    return {**call, "function": {**fn, "arguments": json.dumps(args, ensure_ascii=False)}}
 
 
 # ------------------------------------------------------------- images
@@ -169,7 +240,7 @@ def to_json(messages):
     return json.dumps(messages, ensure_ascii=False)
 
 
-_INTERNAL_KEYS = ("reasoning", "approval", "tool_name")
+_INTERNAL_KEYS = ("reasoning", "approval", "tool_name", "auto")
 _SENDABLE_ROLES = frozenset({"system", "user", "assistant", "tool", "developer"})
 
 

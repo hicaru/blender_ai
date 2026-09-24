@@ -1,18 +1,20 @@
 """Tool registry for the AI agent.
-# mypy: ignore-errors
 
 Every tool registers itself with a JSON schema (OpenAI ``tools`` format),
 an implementation callable and a safety policy:
 
-- ``approval="never"`` — structural tools, safe by construction;
-- ``approval="code"``  — ``run_python``; executed only after user approval;
-- ``pause=True``       — the agent loop parks until the user resolves the
-  call in the panel (``ask_user``; also how ``run_python`` waits for
-  Approve/Reject).
-
-Schemas follow ``{"type": "function", "function": {name, description,
-parameters}}``.
+- ``approval="never"`` — safe by construction;
+- ``approval="code"``  — runs model-written Python (build_model,
+  run_python); executed only after user approval or auto-approve;
+- ``pause=True``       — the agent loop parks until the user answers
+  (``ask_user``);
+- ``vision=True``      — only offered when the model accepts images.
 """
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any, Final
 
 __all__ = ("TOOL_REGISTRY", "ToolError", "register", "tools_schema")
 
@@ -21,11 +23,12 @@ class ToolError(RuntimeError):
     """Raised by tools on invalid input; converted to an ERROR tool result."""
 
 
-TOOL_REGISTRY = {}
+TOOL_REGISTRY: Final[dict[str, dict[str, Any]]] = {}
 
 
-def register(name, description, parameters, func,
-             approval="never", pause=False):
+def register(name: str, description: str, parameters: dict[str, Any],
+             func: Callable[..., str], approval: str = "never",
+             pause: bool = False, vision: bool = False) -> None:
     TOOL_REGISTRY[name] = {
         "schema": {
             "type": "function",
@@ -38,40 +41,15 @@ def register(name, description, parameters, func,
         "func": func,
         "approval": approval,
         "pause": pause,
+        "vision": vision,
     }
 
 
-def tools_schema(profile: str = "full") -> list[dict]:
-    if profile == "compact":
-        return [entry["schema"] for name, entry in TOOL_REGISTRY.items()
-                if name not in _COMPACT_DROP]
-    return [entry["schema"] for entry in TOOL_REGISTRY.values()]
+def tools_schema(vision: bool = False) -> list[dict[str, Any]]:
+    return [entry["schema"] for entry in TOOL_REGISTRY.values()
+            if vision or not entry["vision"]]
 
 
-def _vec3_schema(description: str) -> dict:
-    return {
-        "type": "array",
-        "items": {"type": "number"},
-        "minItems": 3,
-        "maxItems": 3,
-        "description": description,
-    }
-
-
-# Populated by the tool modules below (import side effect); registry
-# must exist first, so these module-level imports follow it on purpose.
-from . import (
-    addons,
-    interactive,
-    materials,
-    mesh_ops,
-    modifiers,
-    scene,
-    sculpt,
-    uv,
-)
-from . import pipeline as _pipeline_tools
-
-# Dropped from the schema by the "compact" tool profile: rarely used by
-# game-asset work, and fewer schemas measurably helps smaller models.
-_COMPACT_DROP = frozenset({"sculpt_setup", "install_addon", "list_addons"})
+# Populated by the tool modules below (import side effect); the registry
+# must exist first, so these imports follow it on purpose.
+from . import build, interactive

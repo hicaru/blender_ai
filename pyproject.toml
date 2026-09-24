@@ -37,30 +37,16 @@ ignore = [
 # string formatting, contextlib.suppress, legacy complexity) are migrated
 # opportunistically; logic-level rules stay enforced.
 "agent.py" = ["ANN", "UP031", "SIM105", "PLR0912", "PLR0915", "E501"]
-"executor.py" = ["ANN", "UP031"]
 "providers.py" = ["ANN", "UP031"]
 "history.py" = ["ANN", "UP031", "E501"]
-"loop_state.py" = ["ANN", "UP031", "SIM105", "PLR0912", "E501"]
 "prefs.py" = ["ANN", "E501", "UP031"]
-"debuglog.py" = ["ANN", "UP031"]
-"prompts.py" = ["ANN"]
-"tools/scene.py" = ["ANN", "UP031", "PLR0912", "E501"]
-"tools/modifiers.py" = ["ANN", "UP031"]
-"tools/materials.py" = ["ANN", "UP031"]
-"tools/uv.py" = ["ANN", "UP031"]
-"tools/sculpt.py" = ["ANN", "UP031"]
-"tools/addons.py" = ["ANN", "UP031"]
-"tools/interactive.py" = ["ANN", "UP031"]
 "__init__.py" = ["E402"]  # bl_info must precede imports (add-on pattern)
-"tools/__init__.py" = ["E402", "F401", "ANN"]  # imports ARE the tool registration
+"tools/__init__.py" = ["E402", "F401"]  # imports ARE the tool registration
 "ui/__init__.py" = ["F401"]  # re-export for panel
 "ui/operators.py" = ["ANN", "E501", "PLR0912", "PLR0915", "UP031"]
 "ui/panel.py" = ["ANN", "E501", "PLR0912", "PLR0915", "UP031"]
-"tests/*" = ["ANN", "PL", "SIM", "E501", "UP031", "E402", "BLE001"]
-"pipeline/*" = ["E501"]
-"tools/mesh_ops.py" = ["E501"]
-"tools/pipeline.py" = ["E501"]
 "attachments.py" = ["E501", "UP031"]
+"tests/*" = ["ANN", "PL", "SIM", "E501", "UP031", "E402", "BLE001"]
 
 [tool.mypy]
 strict = true
@@ -74,14 +60,12 @@ ignore_missing_imports = true
 
 # Legacy modules predate the strict pass. They are followed silently
 # (their unannotated defs count as Any) but not re-checked here; new
-# code is held to --strict.
+# code (modelkit, report, tools, executor, debuglog, prompts) is held
+# to --strict.
 [[tool.mypy.overrides]]
 module = [
     "blender_ai",
-    "agent", "executor", "providers", "history", "loop_state",
-    "prefs", "debuglog",
-    "tools", "tools.scene", "tools.modifiers", "tools.materials",
-    "tools.uv", "tools.sculpt", "tools.addons", "tools.interactive",
+    "agent", "providers", "history", "prefs",
     "ui", "ui.panel", "ui.operators",
 ]
 ignore_errors = true

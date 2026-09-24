@@ -1,9 +1,12 @@
 """Addon preferences: provider, API keys, model, sampling, safety switches.
 # mypy: ignore-errors
 
-Model list: the "Fetch" button downloads the provider's ``/models`` list in
-a worker thread (timer-polled on the main thread — official Blender
-threading pattern) and caches it per provider in ``models_cache`` (JSON).
+Model list: fetched AUTOMATICALLY in a worker thread (timer-polled on the
+main thread — official Blender threading pattern) at startup and whenever
+an API key or the provider changes; the "Fetch" button only forces it.
+Cached per provider in ``models_cache`` (JSON) together with the learned
+vision capabilities (``_vision`` key), so image support survives restarts
+and the user never configures a vision model.
 The ``model_choice`` dropdown reads only from that cache, so drawing never
 blocks on network. A free-text model id stays available for custom models.
 
@@ -22,7 +25,9 @@ from . import providers
 _PROVIDER_ORDER = ("zai", "deepseek", "openrouter")
 
 # State of the background model-list fetch (at most one at a time).
+# result: {provider_id: [ids] | Exception}
 _FETCH = {"thread": None, "result": None}
+_VISION_KEY = "_vision"
 
 
 def _provider_items(self, context):
@@ -58,6 +63,11 @@ def _model_choice_update(self, context):
         self.model = self.model_choice
 
 
+def _auto_fetch_update(self, context):
+    """API key or provider changed: refresh model lists in the background."""
+    start_fetch(self)
+
+
 class AI_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
@@ -65,18 +75,22 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         name="Provider",
         description="LLM provider (OpenAI-compatible chat completions)",
         items=_provider_items,
+        update=_auto_fetch_update,
     )
     api_key_zai: bpy.props.StringProperty(
+        update=_auto_fetch_update,
         name="Z.ai API Key",
         description="API key for api.z.ai (stored in preferences plaintext, standard Blender behaviour)",
         subtype='PASSWORD',
     )
     api_key_deepseek: bpy.props.StringProperty(
+        update=_auto_fetch_update,
         name="DeepSeek API Key",
         description="API key for api.deepseek.com (stored in preferences plaintext, standard Blender behaviour)",
         subtype='PASSWORD',
     )
     api_key_openrouter: bpy.props.StringProperty(
+        update=_auto_fetch_update,
         name="OpenRouter API Key",
         description="API key for openrouter.ai (stored in preferences plaintext, standard Blender behaviour)",
         subtype='PASSWORD',
@@ -109,42 +123,14 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
     )
     auto_approve_code: bpy.props.BoolProperty(
         name="Auto-approve generated code",
-        description="Run run_python code without confirmation. Only enable if you trust the model",
+        description="Run build scripts without confirmation (faster builds). Only enable if you trust the model",
         default=False,
     )
     export_dir: bpy.props.StringProperty(
         name="Export directory",
-        description="Where export_asset writes GLB/FBX files. "
+        description="Where export_glb writes <model>.glb for Bevy. "
                     "Empty = an 'exports' folder next to the .blend",
         subtype="DIR_PATH",
-    )
-    skills_dir: bpy.props.StringProperty(
-        name="Skills directory",
-        description="Extra folder with user *.md skills. "
-                    "Empty = only the built-in skills load",
-        subtype="DIR_PATH",
-    )
-    vision_provider: bpy.props.StringProperty(
-        name="Vision provider (auto)",
-        description="Provider used to caption attached images when the main "
-                    "model has no vision. Empty = same as provider",
-    )
-    vision_model: bpy.props.StringProperty(
-        name="Vision model (auto)",
-        description="Model used to caption attached images when the main "
-                    "model has no vision. Empty = picked automatically "
-                    "(z.ai: glm-4.5v; OpenRouter: first vision model from "
-                    "the /models list)",
-    )
-    tool_profile: bpy.props.EnumProperty(
-        name="Tool profile",
-        description="full exposes every tool; compact drops sculpt and "
-                    "extension tools for models with smaller tool vocabularies",
-        items=(
-            ("full", "Full", "All tools"),
-            ("compact", "Compact", "Drop sculpt + extension tools"),
-        ),
-        default="full",
     )
     reasoning_effort: bpy.props.EnumProperty(
         name="Reasoning effort",
@@ -162,26 +148,11 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
     )
     history_limit: bpy.props.IntProperty(
         name="History limit",
-        description="Trim conversation to this many messages before each request (bounded state)",
-        default=80,
+        description="Trim conversation to this many messages before each request "
+                    "(the task message is always kept; old scripts are compacted)",
+        default=150,
         min=10,
         max=1000,
-    )
-    repair_bound: bpy.props.IntProperty(
-        name="Repair loop bound",
-        description="Max automatic repair-loop iterations after an errored "
-                    "round (the loop's activation bound; further retries "
-                    "stay manual)",
-        default=3,
-        min=1,
-        max=10,
-    )
-    skill_store: bpy.props.StringProperty(
-        name="Skill store",
-        description="Directory for the durable skill store (notes + loop files); "
-                    "empty uses ~/BlenderAI/skills",
-        default="",
-        maxlen=1024,
     )
 
     def get_api_key(self):
@@ -211,17 +182,13 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "auto_approve_code")
         layout.prop(self, "history_limit")
         layout.separator()
-        layout.label(text="Pipeline")
+        layout.label(text="Export (Bevy)")
         layout.prop(self, "export_dir")
-        layout.prop(self, "skills_dir")
-        layout.prop(self, "tool_profile")
-        layout.separator()
-        layout.label(text="Vision fallback (for text-only models)")
-        layout.prop(self, "vision_provider")
-        layout.prop(self, "vision_model")
-        # Repair-loop settings — declared above, so expose them here too.
-        layout.prop(self, "repair_bound")
-        layout.prop(self, "skill_store")
+        model = self.get_model()
+        vision = ("sees images" if providers.supports_vision(self.provider, model)
+                  else "text only - images are described by %s"
+                  % (_captioner_label(self) or "no vision model available"))
+        layout.label(text="%s: %s" % (model or "no model", vision), icon='IMAGE_DATA')
 
 
 def get_prefs():
@@ -233,11 +200,79 @@ def get_prefs():
 _prefs = get_prefs
 
 
-def _worker(provider_id, api_key):
+def _captioner_label(prefs):
+    """provider/model that would describe images for a text-only model."""
+    pick = pick_captioner(prefs)
+    return "%s/%s" % pick if pick else ""
+
+
+def pick_captioner(prefs):
+    """(provider_id, model) of a vision model the user has a key for, or None.
+
+    Same provider first (no extra account needed), then any other
+    provider with a key. Fully automatic — nothing to configure.
+    """
+    order = [prefs.provider] + [p for p in _PROVIDER_ORDER if p != prefs.provider]
+    for provider_id in order:
+        key = getattr(prefs, "api_key_%s" % provider_id, "")
+        if not key:
+            continue
+        model = providers.auto_vision_model(provider_id)
+        if model:
+            return provider_id, model
+    return None
+
+
+def save_vision_state(prefs=None):
+    """Persist learned vision capabilities into models_cache (main thread)."""
+    prefs = prefs or get_prefs()
+    if prefs is None:
+        return
     try:
-        _FETCH["result"] = providers.list_models(provider_id, api_key)
-    except Exception as exc:  # noqa: BLE001 — fetch result carries the error
-        _FETCH["result"] = exc
+        cache = json.loads(prefs.models_cache) if prefs.models_cache else {}
+    except ValueError:
+        cache = {}
+    cache[_VISION_KEY] = providers.vision_state()
+    prefs.models_cache = json.dumps(cache, ensure_ascii=False)
+
+
+def _load_vision_state(prefs):
+    try:
+        cache = json.loads(prefs.models_cache) if prefs.models_cache else {}
+    except ValueError:
+        return
+    providers.load_vision_state(cache.get(_VISION_KEY))
+
+
+def _worker(jobs):
+    """Worker thread: fetch every (provider, key) job; network only."""
+    result = {}
+    for provider_id, api_key in jobs:
+        try:
+            result[provider_id] = providers.list_models(provider_id, api_key)
+        except providers.ProviderError as exc:
+            result[provider_id] = exc
+    _FETCH["result"] = result
+
+
+def start_fetch(prefs, only_current=False):
+    """Background model-list refresh for every provider with a key."""
+    thread = _FETCH.get("thread")
+    if thread is not None and thread.is_alive():
+        return False
+    ids = [prefs.provider] if only_current else list(_PROVIDER_ORDER)
+    jobs = [(pid, getattr(prefs, "api_key_%s" % pid, "")) for pid in ids]
+    jobs = [(pid, key) for pid, key in jobs if key or pid == prefs.provider == "openrouter"]
+    if not jobs:
+        return False
+    prefs.fetch_status = "fetching models…"
+    _FETCH["result"] = None
+    thread = threading.Thread(target=_worker, args=(jobs,), daemon=True)
+    _FETCH["thread"] = thread
+    thread.start()
+    if not bpy.app.timers.is_registered(_fetch_poll):
+        bpy.app.timers.register(_fetch_poll, first_interval=0.1)
+    return True
 
 
 def _fetch_poll():
@@ -245,24 +280,37 @@ def _fetch_poll():
     if thread is not None and thread.is_alive():
         return 0.1
     _FETCH["thread"] = None
-    result = _FETCH.get("result")
+    result = _FETCH.get("result") or {}
     _FETCH["result"] = None
 
     prefs = _prefs()
     if prefs is None:
         return None
-    if isinstance(result, Exception):
-        prefs.fetch_status = "error: %s" % result
-        return None
-
     try:
         cache = json.loads(prefs.models_cache) if prefs.models_cache else {}
     except ValueError:
         cache = {}
-    cache[prefs.provider] = result
+    status = []
+    for provider_id, ids in result.items():
+        if isinstance(ids, Exception):
+            status.append("%s: error" % provider_id)
+            from . import debuglog
+            debuglog.log("model list fetch failed", provider=provider_id, error=str(ids)[:300])
+            continue
+        cache[provider_id] = ids
+        status.append("%s: %d models" % (provider_id, len(ids)))
+    cache[_VISION_KEY] = providers.vision_state()
     prefs.models_cache = json.dumps(cache, ensure_ascii=False)
-    prefs.fetch_status = "%d models loaded" % len(result)
+    prefs.fetch_status = ", ".join(status)
     return None
+
+
+def _startup_fetch():
+    """Deferred from register(): prefs are readable once Blender is up."""
+    prefs = _prefs()
+    if prefs is not None:
+        _load_vision_state(prefs)
+        start_fetch(prefs)
 
 
 class AI_OT_fetch_models(bpy.types.Operator):
@@ -279,19 +327,9 @@ class AI_OT_fetch_models(bpy.types.Operator):
 
     def execute(self, context):
         prefs = context.preferences.addons[__package__].preferences
-        provider_id = prefs.provider
-        api_key = prefs.get_api_key()
-        if not api_key and provider_id != "openrouter":
+        if not start_fetch(prefs, only_current=True):
             self.report({'WARNING'}, "Enter the API key first")
             return {'CANCELLED'}
-
-        prefs.fetch_status = "fetching models…"
-        _FETCH["result"] = None
-        thread = threading.Thread(target=_worker, args=(provider_id, api_key), daemon=True)
-        _FETCH["thread"] = thread
-        thread.start()
-        if not bpy.app.timers.is_registered(_fetch_poll):
-            bpy.app.timers.register(_fetch_poll, first_interval=0.1)
         return {'FINISHED'}
 
 
@@ -301,10 +339,13 @@ classes = (AI_OT_fetch_models, AI_AddonPreferences)
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    if not bpy.app.background:
+        bpy.app.timers.register(_startup_fetch, first_interval=1.0)
 
 
 def unregister():
-    if bpy.app.timers.is_registered(_fetch_poll):
-        bpy.app.timers.unregister(_fetch_poll)
+    for timer in (_fetch_poll, _startup_fetch):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

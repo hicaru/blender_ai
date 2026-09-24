@@ -4,11 +4,11 @@
 Run:
     blender --background --python tests/blender_smoke.py
 
-Covers: registration, the agent loop against a mock provider (structural
-tool call -> final answer), the run_python approval gate (code NOT executed
-until Approve; reject branch returns control to the agent), ask_user,
-per-file history (stored inside the .blend), and the extension management
-tools.
+Covers: registration, the agent loop against a mock provider (build_model
+-> finish), the build_model approval gate (code NOT executed until Approve;
+reject branch returns control to the agent), ask_user, the continue nudge,
+the finish guard, transient-error retries, per-file history (stored inside
+the .blend), and the modeling kit + Bevy GLB export on real geometry.
 
 The mock replaces ``providers.chat_completions``; the agent loop's timer is
 pumped manually because timers do not fire during ``--background`` scripts.
@@ -69,8 +69,8 @@ def tool_call(call_id, name, arguments):
     }
 
 
-def scenario_structural_loop(wm):
-    print("- scenario: structural tool call loop")
+def scenario_structural_loop(wm, prefs):
+    print("- scenario: build_model -> finish loop")
     calls = {"n": 0}
 
     def mock(provider_id, api_key, model, messages, tools=None,
@@ -78,27 +78,33 @@ def scenario_structural_loop(wm):
         calls["n"] += 1
         if calls["n"] == 1:
             return mock_response(tool_calls=[
-                tool_call("call_1", "create_primitive",
-                          {"kind": "cube", "name": "MockCube",
-                           "location": [0, 0, 1]}),
+                tool_call("call_1", "build_model",
+                          {"name": "MockModel",
+                           "code": "mk.box('MockCube', (1, 1, 1), mat='steel')"}),
             ])
-        return mock_response(content="Created the cube named MockCube.")
+        return mock_response(tool_calls=[
+            tool_call("call_2", "finish", {"summary": "Built MockModel."})])
 
     providers.chat_completions = mock
-    wm.blender_ai_input = "make me a cube"
-    bpy.ops.blender_ai.send()
-    check("loop settled", pump())
+    prefs.auto_approve_code = True
+    try:
+        wm.blender_ai_input = "make me a cube"
+        bpy.ops.blender_ai.send()
+        check("loop settled", pump())
+    finally:
+        prefs.auto_approve_code = False
     check("cube created", "MockCube" in bpy.data.objects)
     roles = [m.role for m in wm.blender_ai_messages]
-    check("history shape", roles == ["user", "assistant", "tool", "assistant"],
-          roles)
-    final = wm.blender_ai_messages[-1].content
-    check("final answer in history", final == "Created the cube named MockCube.")
+    check("history shape",
+          roles == ["user", "assistant", "tool", "assistant", "tool", "assistant"], roles)
+    check("finish summary is the final answer",
+          wm.blender_ai_messages[-1].content == "Built MockModel.")
+    check("two provider rounds only", calls["n"] == 2, calls["n"])
     return mock
 
 
 def scenario_code_gate(wm):
-    print("- scenario: run_python approval gate")
+    print("- scenario: build_model approval gate")
     calls = {"n": 0}
 
     def mock_gate(provider_id, api_key, model, messages, tools=None,
@@ -106,12 +112,13 @@ def scenario_code_gate(wm):
         calls["n"] += 1
         if calls["n"] == 1:
             return mock_response(tool_calls=[
-                tool_call("call_py", "run_python",
-                          {"code": "print('SIDE EFFECT'); "
-                                   "bpy.data.meshes.new('EvilMesh')"}),
+                tool_call("call_py", "build_model",
+                          {"name": "Gate", "code": "print('SIDE EFFECT'); "
+                                                   "bpy.data.meshes.new('EvilMesh')"}),
             ])
-        # after resolution the agent continues and answers
-        return mock_response(content="Understood, continuing.")
+        # after resolution the agent continues and ends the task
+        return mock_response(tool_calls=[
+            tool_call("call_fin", "finish", {"summary": "Understood."})])
 
     providers.chat_completions = mock_gate
     wm.blender_ai_input = "run some code"
@@ -127,7 +134,7 @@ def scenario_code_gate(wm):
     bpy.ops.blender_ai.reject_code()
     check("reject settled", pump())
     check("code still NOT executed", "EvilMesh" not in bpy.data.meshes)
-    tool_msgs = [m for m in wm.blender_ai_messages if m.role == "tool"]
+    tool_msgs = [m for m in wm.blender_ai_messages if m.tool_name == "build_model"]
     check("reject tool result", tool_msgs and "REJECTED" in tool_msgs[-1].content,
           tool_msgs[-1].content[:60] if tool_msgs else None)
     check("pending box cleared", agent.pending_view() is None)
@@ -141,7 +148,7 @@ def scenario_code_gate(wm):
     bpy.ops.blender_ai.approve_code()
     check("approve settled", pump())
     check("code executed after approve", "EvilMesh" in bpy.data.meshes)
-    tool_msgs = [m for m in wm.blender_ai_messages if m.role == "tool"]
+    tool_msgs = [m for m in wm.blender_ai_messages if m.tool_name == "build_model"]
     check("tool result has stdout", tool_msgs and "SIDE EFFECT" in tool_msgs[-1].content)
     check("approval recorded", any(m.approval == "ok" for m in wm.blender_ai_messages))
 
@@ -217,7 +224,10 @@ def scenario_reasoning(wm):
     wm.blender_ai_input = "why empty"
     bpy.ops.blender_ai.send()
     check("empty settled", pump())
-    check("auto retry used lowered effort", "low" in efforts, efforts)
+    check("runaway retry turns thinking off", efforts[-1] == "off", efforts)
+    check("runaway nudge sent to the model",
+          any(m.get("auto") and "spent its whole budget" in m.get("content", "")
+              for m in agent.messages()))
     last = wm.blender_ai_messages[-1]
     check("empty answer shows hint",
           last.content.startswith("(Empty answer"), last.content[:50])
@@ -303,72 +313,71 @@ def scenario_collapse(wm):
     check("collapse works", wm.blender_ai_messages[0].collapsed)
 
 
-def scenario_extension_tools(wm):
-    print("- scenario: extension list + gated install/uninstall")
-    from blender_ai import executor
-    check("addon tools registered",
-          "list_extensions" in executor.TOOL_REGISTRY
-          and "install_extension" in executor.TOOL_REGISTRY
-          and "uninstall_extension" in executor.TOOL_REGISTRY)
-
-    listing = executor.dispatch("list_extensions", {"query": "blender"})
-    # Environment-dependent: only asserts when this build was installed
-    # as an extension; otherwise the check is skipped, not failed.
-    installed_as_ext = (__package__ or "").startswith("bl_ext.")
-    check("list_extensions finds blender_ai",
-          (not installed_as_ext)
-          or (listing["ok"] and "bl_ext.user_default.blender_ai" in listing["result"]),
-          listing["result"][:80])
-
-    # Build a tiny valid extension zip to install from disk.
+def scenario_vision(wm, prefs):
+    print("- scenario: automatic vision (native, rejection -> caption fallback)")
     import os
     import tempfile
-    import zipfile
-    manifest = (
-        'schema_version = "1.0.0"\nid = "dummy_ext"\nversion = "0.0.1"\n'
-        'name = "Dummy Ext"\ntagline = "smoke test dummy"\n'
-        'maintainer = "smoke"\ntype = "add-on"\nblender_version_min = "4.2.0"\n'
-        'license = ["SPDX:GPL-3.0-or-later"]\n'
-    )
-    zpath = os.path.join(tempfile.gettempdir(), "blender_ai_dummy_ext.zip")
-    with zipfile.ZipFile(zpath, "w") as zf:
-        zf.writestr("dummy_ext/blender_manifest.toml", manifest)
-        zf.writestr("dummy_ext/__init__.py",
-                    "bl_info = {'name': 'Dummy Ext'}\n"
-                    "def register():\n    pass\n"
-                    "def unregister():\n    pass\n")
 
-    # Gate closed: park, do not install.
-    outcome = executor.dispatch("install_extension", {"source": zpath})
-    check("install parked for approval",
-          outcome.get("pending") and outcome.get("kind") == "code")
-    mods = [m.__name__ for m in __import__("addon_utils").modules()
-            if m.__name__.endswith("dummy_ext")]
-    check("NOT installed before approve", not mods)
+    from blender_ai import attachments
 
-    import json as _json
-    agent._STATE.pending = {
-        "tool_call": {"id": "call_inst", "type": "function",
-                      "function": {"name": "install_extension",
-                                   "arguments": _json.dumps({"source": zpath})}},
-        "kind": "code",
-    }
-    # approve through the same path the operator uses (no provider involved)
-    agent._STATE.messages.append({"role": "assistant", "content": "",
-                                     "approval": "pending"})
-    bpy.ops.blender_ai.approve_code()
-    check("approve settled", pump())
+    img = bpy.data.images.new("vision_probe", 8, 8)
+    png = os.path.join(tempfile.mkdtemp(), "probe.png")
+    img.filepath_raw = png
+    img.file_format = "PNG"
+    img.save()
+    bpy.data.images.remove(img)
 
-    listing = executor.dispatch("list_extensions", {"query": "dummy"})
-    check("dummy installed", listing["ok"] and "dummy_ext" in listing["result"],
-          listing["result"][:120])
+    saved = (prefs.provider, prefs.get_model, prefs.api_key_deepseek)
+    prefs.provider = "deepseek"
+    prefs.api_key_deepseek = "ds-key"
+    prefs.get_model = lambda: "deepseek-flash"
+    calls = []
 
-    # uninstall (auto-approve pref is off in the fake prefs, so force it)
-    result = executor.execute_tool("uninstall_extension", {"module": "dummy_ext"})
-    check("uninstall ok", "uninstalled" in result, result)
-    mods = [m.__name__ for m in __import__("addon_utils").modules()
-            if m.__name__.endswith("dummy_ext")]
-    check("dummy gone", not mods)
+    def parts(messages):
+        return [p for m in messages if isinstance(m.get("content"), list)
+                for p in m["content"] if isinstance(p, dict)]
+
+    def mock(provider_id, api_key, model, messages, tools=None, **kwargs):
+        calls.append((provider_id, model, tools is not None, parts(messages)))
+        if tools is None:  # captioning call
+            return mock_response(content="a small grey square")
+        if any(p.get("type") == "image_url" for p in parts(messages)):
+            raise RuntimeError("DeepSeek returned HTTP 400: image input is not supported")
+        return mock_response(content="I see it.")
+
+    providers.chat_completions = mock
+    try:
+        # 1. deepseek-flash is documented with vision: image goes out natively,
+        #    then the rejection teaches the add-on and it retries with a caption
+        agent.send_user_message("what is this?", attachments=[attachments.load_attachment(png)])
+        check("vision settled", pump())
+        first = calls[0]
+        check("deepseek-flash got the image natively",
+              first[1] == "deepseek-flash" and any(p.get("type") == "image_url" for p in first[3]))
+        check("rejection remembered", not providers.supports_vision("deepseek", "deepseek-flash"))
+        caption = [c for c in calls if not c[2]]
+        check("captioned by another provider automatically",
+              caption and caption[0][0] == "zai" and caption[0][1] == "glm-4.6v",
+              [(c[0], c[1]) for c in caption])
+        last = calls[-1]
+        check("retry carries the caption, not the image",
+              any("a small grey square" in p.get("text", "") for p in last[3])
+              and not any(p.get("type") == "image_url" for p in last[3]))
+        check("answer shown", wm.blender_ai_messages[-1].content == "I see it.")
+        import json as _json
+        check("rejection persisted in prefs",
+              "deepseek-flash" in _json.loads(prefs.models_cache)["_vision"]["no"]["deepseek"])
+
+        # 2. next turn: caption cached, no second caption call
+        n_captions = len(caption)
+        agent.send_user_message("and now?")
+        pump()
+        check("caption cached across rounds",
+              len([c for c in calls if not c[2]]) == n_captions)
+    finally:
+        providers._NO_VISION.clear()
+        prefs.provider, prefs.get_model, prefs.api_key_deepseek = saved
+
 
 
 def scenario_perfile(wm):
@@ -402,183 +411,217 @@ def scenario_perfile(wm):
 def scenario_error(wm):
     print("- scenario: provider error surfaces as error message")
 
+    attempts = {"n": 0}
+
     def mock_fail(provider_id, api_key, model, messages, tools=None,
                   temperature=0.4, timeout=90, thinking=False, **kwargs):
+        attempts["n"] += 1
         raise RuntimeError("HTTP 500: simulated outage")
 
     providers.chat_completions = mock_fail
     wm.blender_ai_input = "hello"
     bpy.ops.blender_ai.send()
     check("error settled", pump())
+    check("transient error retried twice", attempts["n"] == 3, attempts["n"])
     last = wm.blender_ai_messages[-1]
     check("error message shown", last.role == "error" and "HTTP 500" in last.content)
     check("busy cleared", not wm.blender_ai_busy)
 
 
-def scenario_pipeline_tools(wm):
-    print("- scenario: pipeline tools (spec, create, validate, lod, collision, export, capture)")
+BUNKER = """
+R, WALL, DEPTH = 6.0, 0.5, 12.0
+shaft = mk.tube('Shaft', R, WALL, DEPTH, (0, 0, -DEPTH), mat='concrete')
+mk.cylinder('Base', R, 0.4, (0, 0, -DEPTH - 0.4), mat='concrete_dark')
+for i in (1,):
+    mk.tube(f'Floor_{i}', R - WALL, 2.0, 0.3, (0, 0, -6.0 * i), mat='concrete_dark')
+col = mk.cylinder('Column', 0.6, DEPTH, (0, 0, -DEPTH), mat='steel')
+step = mk.box('Step', (2.0, 0.6, 0.12), (1.6, 0, -DEPTH + 0.2), mat='dark_steel')
+for i in range(1, 40):
+    a = i * 15
+    s = mk.copy(step, f'Step_{i}', rot=(0, 0, a))
+    s.location = (1.6 * math.cos(math.radians(a)), 1.6 * math.sin(math.radians(a)),
+                  -DEPTH + 0.2 + i * 0.3)
+block = mk.box('Entrance', (8, 6, 3.5), (0, 0, 0), mat='concrete')
+mk.cut(block, mk.box('door_cut', (2.4, 2.0, 2.6), (0, -2.6, 0)))
+mk.bevel(block, 0.04, 1)
+door = mk.box('Blast_Door', (2.4, 0.2, 2.6), (0, -3.2, 0), mat='dark_steel')
+wheel = mk.torus('Wheel', 0.4, 0.08, (0, -3.35, 1.3), axis='Y', mat='red', anchor='center')
+mk.group('Door', door, wheel, at=(-1.2, -3.2, 0))
+mk.sphere('Dome', 2.5, (0, 0.5, 3.5), hemi=True, mat='concrete_dark')
+rail = mk.box('Rail', (0.05, 0.05, 1.0), (-2.0, -3.4, 0), mat='steel')
+mk.mirror(rail, 'X', 'Rail_R')
+vent = mk.cylinder('Vent', 0.3, 1.0, (3.0, 2.0, 3.5), verts=12, mat='rust')
+mk.repeat(vent, 2, (-6.0, 0, 0))
+lamp = mk.box('Lamp', (0.4, 0.2, 0.2), (0, -(R - WALL - 0.1), -3), mat='light_cold', anchor='center')
+mk.radial(lamp, 4)
+mk.stairs('Stairs', 2.4, 0.9, 1.6, 5, (0, -4.9, 0), mat='concrete')
+mk.profile('Frame', [(-1.5, 0), (1.5, 0), (1.5, 3.0), (-1.5, 3.0)], 0.2, (0, -3.05, 0), mat='hazard_yellow')
+print('built', len(mk.collection.objects))
+"""
+
+
+def scenario_build_tools(wm):
+    print("- scenario: modeling kit, report, rebuild, export for Bevy, capture")
     import json as _json
+    import os
 
-    # every export kwarg exists in the operator RNA (API renames break CI, not users)
-    import bpy.app
-    from blender_ai.pipeline import checks, facts
-    from blender_ai.pipeline.export import plan_for
-    from blender_ai.pipeline.spec import SPEC_KEY, Engine
-    from blender_ai.tools import mesh_ops
-    from blender_ai.tools import pipeline as pipe
-    from blender_ai.tools import scene as scene_tools
-    for engine in Engine:
-        plan = plan_for(engine)
-        op = bpy.ops.export_scene.gltf if plan.operator == "gltf" else bpy.ops.export_scene.fbx
-        rna_props = {p.identifier for p in op.get_rna_type().properties}
-        missing = [k for k in plan.kwargs if k not in rna_props]
-        check("export kwargs in RNA (%s)" % engine.value, not missing, missing)
+    from blender_ai.tools import build
 
-    result = pipe.set_asset_spec(
-        "Barrel", "Wooden storage barrel with two iron hoops",
-        asset_class="prop", engine="godot", style="lowpoly",
-        size_m=[0.6, 0.6, 0.9])
-    check("spec created", '"collection":"SM_Barrel"' in result, result)
-    coll = bpy.data.collections["SM_Barrel"]
-    spec_json = coll.get(SPEC_KEY)
-    check("spec stored on collection", bool(spec_json))
-    from blender_ai.pipeline.spec import AssetSpec
-    spec = AssetSpec.from_json(spec_json)
-    check("godot lods default to none", spec.lods == (1.0,), spec.lods)
-    low, high = spec.budget
-    check("lowpoly budget is quarter", (low, high) == (125, 1250), (low, high))
+    report = build.build_model("Bunker", BUNKER)
+    check("bunker builds", report.startswith("BUILD OK"), report[:300])
+    check("bunker is one connected object", "disconnected" not in report, report[-600:])
+    check("script output in report", "built" in report)
+    check("linked steps fold", "(linked copies)" in report)
+    coll = bpy.data.collections["Bunker"]
+    names = {o.name for o in coll.all_objects}
+    for expected in ("Shaft", "Entrance", "Door", "Dome", "Rail_R", "Vent_1", "Lamp_3", "Stairs"):
+        check("part %s" % expected, expected in names)
+    check("cutters removed", "door_cut" not in names)
+    check("baked mesh keeps its name", bpy.data.objects["Entrance"].data.name == "Entrance")
+    rail_r = bpy.data.objects["Rail_R"]
+    check("mirror lands at +x", abs(rail_r.location.x - 2.0) < 1e-4, tuple(rail_r.location))
+    lamp1 = bpy.data.objects["Lamp_1"]  # 90 deg: (0,-5.4) -> (5.4, 0)
+    check("radial rotates around z", abs(lamp1.matrix_world.translation.x - 5.4) < 0.05,
+          tuple(lamp1.matrix_world.translation))
+    door = bpy.data.objects["Door"]
+    check("group has children", len(door.children) == 2)
+    check("door cut made a hole",
+          len(bpy.data.objects["Entrance"].data.polygons) > 6)
+    check("dome is closed", all(e.is_manifold for e in bpy.data.objects["Dome"].data.edges)
+          if hasattr(bpy.types.MeshEdge, "is_manifold") else True)
+    check("script stored as text", "build_Bunker.py" in bpy.data.texts)
+    check("read_script round-trips", build.read_script("Bunker") == BUNKER)
 
-    scene_tools.create_primitive(
-        "cylinder", name="SM_Barrel_Body", vertices=12,
-        dimensions=[0.6, 0.6, 0.9], origin="bottom",
-        description="Oak barrel body", role="body", color="wood_light")
-    body = bpy.data.objects["SM_Barrel_Body"]
-    check("dimensions in meters", abs(body.dimensions.z - 0.9) < 0.02,
-          tuple(round(d, 3) for d in body.dimensions))
-    check("origin bottom", body.location.z < 0.01, body.location.z)
-    check("min z at zero",
-          abs(min((body.matrix_world @ v.co).z for v in body.data.vertices)) < 1e-4)
-    check("description stored", body.get("ai_description") == "Oak barrel body")
-    check("asset stored", body.get("ai_asset") == "SM_Barrel")
-    check("color is palette wood_light", body.color[0] > 0.2 and body.color[2] < 0.5,
-          tuple(round(c, 2) for c in body.color))
-    check("Col attribute written",
-          body.data.color_attributes.get("Col") is not None)
-    check("shared vertex material",
-          any(m and m.name == "M_SM_Barrel_VertexColor" for m in body.data.materials))
-    # auto color fallback
-    scene_tools.create_primitive(
-        "torus", name="SM_Barrel_Hoop_Top", dimensions=[0.62, 0.62, 0.04],
-        location=[0, 0, 0.75], major_segments=12, minor_segments=4,
-        description="Iron hoop, top", role="trim", color="iron")
-    hoop = bpy.data.objects["SM_Barrel_Hoop_Top"]
-    check("in asset collection", hoop.name in coll.objects)
+    # rebuild wipes the old parts (deterministic iteration)
+    report2 = build.build_model("Bunker", "mk.box('Only', (1, 1, 1))")
+    check("rebuild replaces parts",
+          {o.name for o in coll.all_objects} == {"Only"}, report2[:200])
+    check("no orphan meshes after rebuild", "Shaft" not in bpy.data.meshes)
 
-    # mesh_op: barrel bulge via band scale
-    mesh_ops.mesh_op("SM_Barrel_Body", "subdivide", "side", {"cuts": 2})
-    mesh_ops.mesh_op("SM_Barrel_Body", "scale_faces", "band",
-                     {"factor": 1.1, "axis": "XY", "band": [0.3, 0.7]})
-    check("bulge widened body", body.dimensions.x > 0.605,
-          round(body.dimensions.x, 4))
+    # script errors point at the failing line; earlier parts survive
+    report3 = build.build_model("Bunker", "mk.box('A', (1, 1, 1))\nmk.bx('B')\n")
+    check("error names the line", "BUILD ERROR" in report3 and "line 2" in report3, report3[:200])
+    check("partial parts kept", "A" in bpy.data.objects)
+    report4 = build.build_model("Bunker", "mk.box('A', (1, 1, 1), mat='unobtainium')")
+    check("unknown material explains palette", "palette key" in report4, report4[:200])
+    report5 = build.build_model("Bunker", "mk.box('A', (1,1,1))\nmk.box('B', (1,1,1), (10,0,0))")
+    check("scattered parts flagged", "2 disconnected groups" in report5, report5)
 
-    # validation on the raw blockout: unapplied scale is the expected FAIL;
-    # primitives ship with a UV map, so uv.missing must NOT fire
-    scene_facts = facts.collect_asset_facts(bpy.context.scene)
-    results = checks.evaluate(scene_facts, scene_facts["spec"])
-    fails = [c.id for c in results if c.status == "FAIL"]
-    warns = [c.id for c in results if c.status == "WARN"]
-    check("scale.applied FAIL on blockout", "scale.applied" in fails, fails)
-    check("normals pass on stock primitives", "normals.flipped" not in fails, fails)
-    check("no uv.missing on primitives", "uv.missing" not in fails + warns,
-          fails + warns)
+    # scene state + export
+    build.build_model("Bunker", BUNKER)
+    state = _json.loads(build.get_scene_state())
+    check("scene state lists model", any(m["name"] == "Bunker" and m["parts"] > 20
+                                          for m in state["models"]), state["models"])
+    props = bpy.ops.export_scene.gltf.get_rna_type().properties
+    missing = [k for k in build._BEVY_GLTF if k not in props]
+    check("export kwargs exist in RNA", not missing, missing)
+    out = _json.loads(build.export_glb("Bunker"))
+    check("glb written", out["ok"] and os.path.getsize(out["path"]) > 10_000, out)
+    check("bevy load snippet", "GltfAssetLabel::Scene(0)" in out["bevy"])
+    before = set(bpy.data.objects.keys())
+    bpy.ops.import_scene.gltf(filepath=out["path"])
+    imported = set(bpy.data.objects.keys()) - before
+    check("glb re-import has the blast door", any(n.startswith("Blast_Door") for n in imported),
+          sorted(imported)[:8])
+    for name in imported:
+        bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)
 
-    # origin fix (hoop parented to body: only roots need a base origin)
-    hoop.parent = body
-    mesh_ops.set_origin("SM_Barrel_Body", "bottom")
-    scene_facts = facts.collect_asset_facts(bpy.context.scene)
-    check("origin.base passes after fix",
-          checks.evaluate(scene_facts, spec, only="origin.base")[0].status == "PASS")
-
-    # LODs + collision
-    created = pipe.generate_lods()
-    check("godot default skips lods", _json.loads(created)["created"] == [], created)
-    lods = pipe.generate_lods(ratios=[0.5])
-    check("one lod created", "SM_Barrel_Body_LOD1" in lods, lods)
-    lod_obj = bpy.data.objects["SM_Barrel_Body_LOD1"]
-    check("lod has decimate modifier",
-          any(m.type == "DECIMATE" for m in lod_obj.modifiers))
-    check("lod role", lod_obj.get("ai_role") == "lod")
-    cols = _json.loads(pipe.make_collision("box"))["created"]
-    check("godot collision name", cols and "-convcolonly" in cols[0], cols)
-    check("collision skips lods", all("_LOD" not in c for c in cols), cols)
-    col_obj = bpy.data.objects[cols[0]]
-    check("collision wire + no render",
-          col_obj.display_type == "WIRE" and col_obj.hide_render)
-
-    # done-gate: capture sheet is written
-    cap = pipe.capture_view(["iso", "front"])
-    cap_payload = _json.loads(cap)
-    cap_path = cap_payload["image"]
-    check("capture png exists", os.path.isfile(cap_path), cap_path)
-    wm.blender_ai_capture_path = cap_path
-
-    # export: must REFUSE while scale.applied FAILs (the done-gate)
-    out = pipe.export_asset()
-    check("export refuses on FAIL", out.startswith("REFUSED"), out[:80])
-
-    # finalize, then export for real
-    from blender_ai.tools import mesh_ops as _mo
-    _mo.finalize("SM_Barrel", apply_transform=True)
-    out = pipe.export_asset()
-    payload = _json.loads(out)
-    check("export ok", payload["ok"] is True, out)
-    check("export file exists", os.path.isfile(payload["path"]), payload["path"])
-    before = {o["name"]: o["description"] for o in scene_facts["objects"]}
-    bpy.ops.import_scene.gltf(filepath=payload["path"])
-    reimported = next((o for o in bpy.data.objects
-                       if o.name.startswith("SM_Barrel_Body")), None)
-    check("glb re-import has body", reimported is not None)
-    if reimported is not None:
-        check("glb extras carry ai_description",
-              reimported.get("ai_description") == before.get("SM_Barrel_Body"),
-              reimported.get("ai_description"))
+    cap = _json.loads(build.capture_view("Bunker"))
+    check("capture sheet written", os.path.isfile(cap["image"]))
+    from blender_ai.tools import tools_schema
+    check("capture hidden for text-only models",
+          "capture_view" not in {t["function"]["name"] for t in tools_schema(vision=False)})
 
 
-def scenario_skills(wm):
-    print("- scenario: skills (parse, index, auto-match, load_skill)")
-    from blender_ai.skills import SkillIndex
+def scenario_nudge(wm, prefs):
+    print("- scenario: build turn that stops in prose gets nudged, then finishes")
+    calls = {"n": 0}
+    seen = {}
 
-    index = SkillIndex.load(None)
-    check("built-in skills parsed", len(index.skills) >= 18, len(index.skills))
-    check("no parse errors", index.errors == (), index.errors)
-    tree = index.get("lowpoly-tree")
-    check("tree skill exists", tree is not None)
-    if tree:
-        check("tree triggers", "pine" in tree.triggers and tree.tri_budget == (150, 600))
-    match = index.best_match("make a low-poly pine tree for my godot game")
-    check("auto-match picks tree", match is not None and match.name == "lowpoly-tree",
-          match.name if match else None)
-    match2 = index.best_match("a wooden crate please")
-    check("auto-match picks prop", match2 is not None and match2.name == "lowpoly-prop",
-          match2.name if match2 else None)
-    body = None
-    from blender_ai.tools import pipeline as pipe
+    def mock(provider_id, api_key, model, messages, tools=None,
+             temperature=0.4, timeout=90, thinking=False, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return mock_response(tool_calls=[tool_call(
+                "b1", "build_model", {"name": "N", "code": "mk.box('Body', (1, 1, 1))"})])
+        if calls["n"] == 2:
+            return mock_response(content="Next I will add the roof and the door.")
+        seen["last_user"] = [m for m in messages if m.get("role") == "user"][-1]["content"]
+        return mock_response(tool_calls=[tool_call("f1", "finish", {"summary": "Done: N."})])
+
+    providers.chat_completions = mock
+    prefs.auto_approve_code = True
     try:
-        body = pipe.load_skill("lowpoly-prop")
-    except Exception as exc:
-        check("load_skill runs", False, exc)
-    check("load_skill returns body", body is not None and "## Steps" in body)
-    check("skill pinned", agent_module_pin() == "lowpoly-prop")
-    # index reaches the prompt
-    from blender_ai import prompts
-    block = index.index_block()
-    text = prompts.system_prompt(block)
-    check("index in prompt", "lowpoly-prop" in text)
+        wm.blender_ai_input = "make a house"
+        bpy.ops.blender_ai.send()
+        check("nudge settled", pump())
+    finally:
+        prefs.auto_approve_code = False
+    check("model was nudged to continue", "(harness)" in seen.get("last_user", ""), seen)
+    check("nudge shown as auto-continue",
+          any(m.role == "auto" for m in wm.blender_ai_messages))
+    check("finished after nudge", wm.blender_ai_messages[-1].content == "Done: N.")
+    check("three rounds", calls["n"] == 3, calls["n"])
+
+    # plain Q&A (no build) is never nudged
+    calls["n"] = 10
+    providers.chat_completions = lambda *a, **k: mock_response(content="Bevy uses Y-up.")
+    bpy.ops.blender_ai.new_chat()
+    wm.blender_ai_input = "which axis is up in bevy?"
+    bpy.ops.blender_ai.send()
+    check("qa settled", pump())
+    check("qa not nudged", [m.role for m in wm.blender_ai_messages] == ["user", "assistant"])
 
 
-def agent_module_pin():
-    from blender_ai.pipeline.session import session
-    return session.pinned_skill
+def scenario_runaway_then_build(wm, prefs):
+    print("- scenario: reasoning runaway -> build continues with thinking off")
+    efforts = []
+
+    def mock(provider_id, api_key, model, messages, tools=None, **kwargs):
+        efforts.append(kwargs.get("reasoning_effort"))
+        if len(efforts) == 1:
+            return mock_response(extra_message_fields={"reasoning_content": "x" * 5000})
+        if len(efforts) == 2:
+            return mock_response(tool_calls=[tool_call(
+                "b1", "build_model", {"name": "R", "code": "mk.box('Body', (1, 1, 1))"})])
+        return mock_response(tool_calls=[tool_call("f1", "finish", {"summary": "ok"})])
+
+    providers.chat_completions = mock
+    prefs.auto_approve_code = True
+    try:
+        wm.blender_ai_input = "build a vault"
+        bpy.ops.blender_ai.send()
+        check("runaway build settled", pump())
+    finally:
+        prefs.auto_approve_code = False
+    check("thinking stays off for the task", efforts == ["medium", "off", "off"], efforts)
+    check("runaway task finished", wm.blender_ai_messages[-1].content == "ok")
+
+
+def scenario_finish_guard(wm, prefs):
+    print("- scenario: finish in the same batch as a failed build is refused")
+    calls = {"n": 0}
+
+    def mock(provider_id, api_key, model, messages, tools=None,
+             temperature=0.4, timeout=90, thinking=False, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return mock_response(tool_calls=[
+                tool_call("b1", "build_model", {"name": "G", "code": "mk.nope()"}),
+                tool_call("f1", "finish", {"summary": "all good"})])
+        return mock_response(tool_calls=[tool_call("f2", "finish", {"summary": "fixed"})])
+
+    providers.chat_completions = mock
+    prefs.auto_approve_code = True
+    try:
+        wm.blender_ai_input = "make g"
+        bpy.ops.blender_ai.send()
+        check("guard settled", pump())
+    finally:
+        prefs.auto_approve_code = False
+    contents = [m.content for m in wm.blender_ai_messages]
+    check("finish refused after error", any("NOT FINISHED" in c for c in contents))
+    check("task finished on retry", contents[-1] == "fixed", contents[-1])
 
 
 def scenario_panel(wm):
@@ -595,29 +638,21 @@ def scenario_panel(wm):
     width = ui_panel._region_wrap_width(bpy.context)
     check("region width sane", 20 <= width <= 400, width)
 
-    # pipeline summary derives stage/progress from the live scene
-    summary = ui_panel._pipeline_summary()
-    if bpy.context.scene.get("blender_ai_active_asset"):
-        check("pipeline summary computed", summary is not None and
-              0 <= summary[2] <= 1, summary[:3] if summary else None)
-    else:
-        check("pipeline summary None without asset", summary is None)
-
-    # skills snapshot is cached and re-reads within TTL
-    snap1 = ui_panel._skills_snapshot()
-    snap2 = ui_panel._skills_snapshot()
-    check("skills snapshot cached", snap1 is snap2 and len(snap1.skills) >= 18)
+    check("no pipeline/skills sections",
+          not hasattr(ui_panel, "_pipeline_summary")
+          and not hasattr(ui_panel, "_skills_snapshot"))
 
 
 def main():
     print("== blender_ai smoke ==")
     bpy.context.preferences.system.use_online_access = True  # agent guard
 
-    # The repair loop persists to the skill store; sandbox it so this run
-    # never writes loop files or notes into the user's real store.
+    # Test runs must never write into the user's real debug log (they
+    # did: fake "HTTP 500" errors and stop bursts buried real sessions).
+    import os
     import tempfile
-    loop_tmp = tempfile.mkdtemp(prefix="blender_ai_smoke_")
-    agent._loop_store_dir = lambda: loop_tmp
+    os.environ["BLENDER_AI_LOG"] = os.path.join(
+        tempfile.mkdtemp(prefix="blender_ai_smoke_"), "debug.log")
 
     # If this addon is also installed+enabled as an extension in this
     # Blender config, disable it for the run — otherwise two copies share
@@ -635,8 +670,7 @@ def main():
         api_key_zai="test-key", api_key_deepseek="", api_key_openrouter="",
         model="", temperature=0.4, auto_approve_code=False, history_limit=80,
         reasoning_effort="medium",
-        export_dir="", skills_dir="", vision_provider="", vision_model="",
-        tool_profile="full",
+        export_dir="", models_cache="{}",
         get_api_key=lambda: "test-key",
         get_model=lambda: "glm-4.6",
     )
@@ -652,7 +686,7 @@ def main():
 
     wm = bpy.context.window_manager
     try:
-        mock = scenario_structural_loop(wm)
+        mock = scenario_structural_loop(wm, fake_prefs)
         bpy.ops.blender_ai.new_chat()
 
         scenario_code_gate(wm)
@@ -670,15 +704,21 @@ def main():
         scenario_reasoning(wm)
         bpy.ops.blender_ai.new_chat()
 
-        scenario_extension_tools(wm)
+        scenario_nudge(wm, fake_prefs)
+        bpy.ops.blender_ai.new_chat()
+
+        scenario_finish_guard(wm, fake_prefs)
+        bpy.ops.blender_ai.new_chat()
+
+        scenario_runaway_then_build(wm, fake_prefs)
+        bpy.ops.blender_ai.new_chat()
+
+        scenario_vision(wm, fake_prefs)
         bpy.ops.blender_ai.new_chat()
 
         scenario_error(wm)
 
-        scenario_pipeline_tools(wm)
-        bpy.ops.blender_ai.new_chat()
-
-        scenario_skills(wm)
+        scenario_build_tools(wm)
         bpy.ops.blender_ai.new_chat()
 
         scenario_panel(wm)

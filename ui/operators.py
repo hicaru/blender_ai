@@ -123,172 +123,6 @@ class AI_OT_remove_attachment(_ChatOperator, bpy.types.Operator):
         return {'FINISHED'}
 
 
-class AI_OT_attachment_to_reference(_ChatOperator, bpy.types.Operator):
-    """Place a staged attachment into the scene as a reference image empty"""
-
-    bl_idname = "blender_ai.attachment_to_reference"
-    bl_label = "As reference"
-
-    index: bpy.props.IntProperty(default=0)
-
-    def execute(self, context):
-        wm = context.window_manager
-        if not (0 <= self.index < len(wm.blender_ai_attachments)):
-            return {'CANCELLED'}
-        item = wm.blender_ai_attachments[self.index]
-        from ..tools.pipeline import add_reference_image
-
-        try:
-            add_reference_image(item.path, view="front")
-        except (RuntimeError, ValueError) as exc:
-            self.report({'WARNING'}, str(exc))
-            return {'CANCELLED'}
-        return {'FINISHED'}
-
-
-class AI_OT_run_pipeline_action(_ChatOperator, bpy.types.Operator):
-    """Run a pipeline tool directly (no LLM): validate/capture/lods/collision/export"""
-
-    bl_idname = "blender_ai.run_pipeline_action"
-    bl_label = "Run"
-
-    action: bpy.props.EnumProperty(items=(
-        ("validate", "Validate", "Run every check"),
-        ("capture", "Capture", "2x2 contact sheet"),
-        ("lods", "LODs", "Generate LOD duplicates"),
-        ("collision", "Collision", "Collision proxies"),
-        ("export", "Export", "Write GLB/FBX with the engine preset"),
-    ))
-
-    def execute(self, context):
-        from ..tools import pipeline as pipe_tools
-
-        fn = {
-            "validate": pipe_tools.validate_asset,
-            "capture": pipe_tools.capture_view,
-            "lods": pipe_tools.generate_lods,
-            "collision": pipe_tools.make_collision,
-            "export": pipe_tools.export_asset,
-        }[self.action]
-        try:
-            result = fn()
-        except (RuntimeError, ValueError) as exc:
-            self.report({'WARNING'}, "%s: %s" % (self.action, exc))
-            return {'CANCELLED'}
-        if self.action == "capture":
-            # Build the image datablock + preview HERE (execute context).
-            # draw() may only READ bpy.data — writes there are forbidden.
-            try:
-                import json
-
-                path = json.loads(result).get("image", "")
-                if path:
-                    img = bpy.data.images.load(path, check_existing=True)
-                    img.preview_ensure()
-                    context.window_manager.blender_ai_capture_path = path
-            except (ValueError, RuntimeError, OSError) as exc:
-                self.report({'WARNING'}, "capture preview: %s" % exc)
-        self.report({'INFO'}, result[:200])
-        return {'FINISHED'}
-
-
-class AI_OT_fix_check(_ChatOperator, bpy.types.Operator):
-    """Send the validation fix hint for one failing check as a user message"""
-
-    bl_idname = "blender_ai.fix_check"
-    bl_label = "Fix"
-
-    check_id: bpy.props.StringProperty()
-
-    def execute(self, context):
-        agent.send_user_message(
-            "Fix validation issue: %s (see <asset_state> hint)" % self.check_id)
-        return {'FINISHED'}
-
-
-class AI_OT_apply_brief(_ChatOperator, bpy.types.Operator):
-    """Apply the brief form to the asset spec (same property the model edits)"""
-
-    bl_idname = "blender_ai.apply_brief"
-    bl_label = "Apply brief"
-
-    def execute(self, context):
-        from ..tools.pipeline import set_asset_spec
-
-        wm = context.window_manager
-        size = tuple(wm.blender_ai_brief_size)
-        try:
-            set_asset_spec(
-                wm.blender_ai_brief_name or "Asset",
-                wm.blender_ai_brief_desc or "User-defined asset",
-                asset_class=wm.blender_ai_brief_class,
-                engine=wm.blender_ai_brief_engine,
-                style=wm.blender_ai_brief_style,
-                color_mode=wm.blender_ai_brief_colors,
-                size_m=size if any(size) else None,
-            )
-        except (RuntimeError, ValueError) as exc:
-            self.report({'WARNING'}, str(exc))
-            return {'CANCELLED'}
-        return {'FINISHED'}
-
-
-class AI_OT_random_color(_ChatOperator, bpy.types.Operator):
-    """Recolor selected objects with deterministic palette colors"""
-
-    bl_idname = "blender_ai.random_color"
-    bl_label = "Color"
-
-    def execute(self, context):
-        from ..pipeline.color import apply_object_color
-        from ..pipeline.facts import active_spec
-        from ..pipeline.palette import auto_color
-        from ..pipeline.spec import ColorMode
-
-        spec = active_spec(context.scene)[1]
-        mode = spec.color_mode if spec else ColorMode.VERTEX_COLOR
-        for obj in context.selected_objects:
-            apply_object_color(obj, auto_color(obj.name), mode)
-        return {'FINISHED'}
-
-
-class AI_OT_reload_skills(_ChatOperator, bpy.types.Operator):
-    """Reload the skill index from disk"""
-
-    bl_idname = "blender_ai.reload_skills"
-    bl_label = "Reload skills"
-
-    def execute(self, context):
-        from pathlib import Path
-
-        from ..prefs import get_prefs
-        from ..skills import SkillIndex
-
-        prefs = get_prefs()
-        raw = str(getattr(prefs, "skills_dir", "") or "") if prefs else ""
-        index = SkillIndex.load(Path(raw) if raw else None)
-        self.report({'INFO'}, "%d skills loaded" % len(index.skills))
-        return {'FINISHED'}
-
-
-class AI_OT_open_skills_dir(_ChatOperator, bpy.types.Operator):
-    """Open the user skills folder (create it if missing)"""
-
-    bl_idname = "blender_ai.open_skills_dir"
-    bl_label = "Open skills folder"
-
-    def execute(self, context):
-        import os
-
-        path = bpy.utils.extension_path_user(__package__.split(".")[-1],
-                                             path="skills", create=True)
-        if hasattr(os, "startfile"):
-            os.startfile(path)
-        else:
-            bpy.ops.wm.path_open(filepath=path)
-        return {'FINISHED'}
-
-
 class AI_OT_stop(_ChatOperator, bpy.types.Operator):
     """Stop the current agent run"""
 
@@ -410,20 +244,17 @@ class AI_FH_image_drop(bpy.types.FileHandler):
 
 classes: tuple = (
     AI_OT_send, AI_OT_attach_image, AI_OT_paste_image, AI_OT_remove_attachment,
-    AI_OT_attachment_to_reference, AI_OT_run_pipeline_action, AI_OT_fix_check,
-    AI_OT_apply_brief, AI_OT_random_color, AI_OT_reload_skills,
-    AI_OT_open_skills_dir, AI_OT_stop, AI_OT_new_chat, AI_OT_approve_code,
-    AI_OT_reject_code, AI_OT_answer, AI_OT_toggle_message,
-    AI_FH_image_drop,
+    AI_OT_stop, AI_OT_new_chat, AI_OT_approve_code, AI_OT_reject_code,
+    AI_OT_answer, AI_OT_toggle_message, AI_FH_image_drop,
 )
 
 
-def register_pipeline_operators():
+def register_operators():
     for cls in classes:
         bpy.utils.register_class(cls)
 
 
-def unregister_pipeline_operators():
+def unregister_operators():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
 

@@ -4,10 +4,10 @@
 bl_info = {
     "name": "Blender AI",
     "author": "hicaru",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (5, 2, 0),
     "location": "3D Viewport > Sidebar > AI",
-    "description": "AI agent that builds game-ready 3D assets through Blender tools",
+    "description": "AI agent that builds 3D models for Bevy games",
     "doc_url": "",
     "category": "3D View",
 }

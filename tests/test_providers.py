@@ -320,11 +320,32 @@ class AutoVisionModelTests(unittest.TestCase):
     def test_unknown_provider_returns_none(self):
         self.assertIsNone(providers.auto_vision_model("nope"))
 
-    def test_deepseek_no_vision_model_returns_none(self):
+    def tearDown(self):
+        providers._NO_VISION.clear()
+
+    def test_deepseek_flash_sees_images(self):
+        # api-docs.deepseek.com: deepseek-flash Vision ✓, deepseek-v4-pro not
+        self.assertTrue(providers.supports_vision("deepseek", "deepseek-flash"))
+        self.assertFalse(providers.supports_vision("deepseek", "deepseek-v4-pro"))
+
+    def test_deepseek_pro_gets_flash_as_captioner(self):
+        self.assertEqual(providers.auto_vision_model("deepseek"), "deepseek-flash")
+
+    def test_zai_doc_models(self):
+        self.assertEqual(providers.auto_vision_model("zai"), "glm-4.6v")
+
+    def test_rejected_model_is_never_sent_images_again(self):
+        providers.mark_no_vision("deepseek", "deepseek-flash")
+        self.assertFalse(providers.supports_vision("deepseek", "deepseek-flash"))
         self.assertIsNone(providers.auto_vision_model("deepseek"))
 
-    def test_zai_static_fallback(self):
-        self.assertEqual(providers.auto_vision_model("zai"), "glm-4.5v")
+    def test_state_round_trip(self):
+        providers.mark_no_vision("zai", "glm-4.5v")
+        state = providers.vision_state()
+        providers._NO_VISION.clear()
+        providers.load_vision_state(state)
+        self.assertFalse(providers.supports_vision("zai", "glm-4.5v"))
+        providers.load_vision_state({"no": "garbage", "yes": None})  # ignored
 
     def test_cached_vision_metadata_wins(self):
         providers.remember_vision_models(

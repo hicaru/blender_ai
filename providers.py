@@ -31,8 +31,11 @@ __all__ = (
     "chat_completions",
     "image_part",
     "list_models",
+    "load_vision_state",
+    "mark_no_vision",
     "supports_vision",
     "text_part",
+    "vision_state",
 )
 
 
@@ -47,6 +50,7 @@ PROVIDERS = {
         "label": "DeepSeek",
         "base_url": "https://api.deepseek.com",
         "default_model": "deepseek-flash",
+        "vision_model": "deepseek-flash",  # api-docs.deepseek.com/guides/vision
     },
     "openrouter": {
         "label": "OpenRouter",
@@ -66,15 +70,23 @@ class ProviderCancelled(ProviderError):
 
 # ------------------------------------------------------------- vision
 
-# Model ids (or id prefixes) known to accept image input. DeepSeek has no
-# vision model; OpenRouter models are detected from /models metadata when
-# available (cached in _VISION_MODELS), otherwise the id heuristic applies.
+# Vision capability, most reliable source first:
+# 1. _NO_VISION  — learned at runtime: the provider rejected an image;
+# 2. _VISION_MODELS — /models metadata (OpenRouter input_modalities) and
+#    ids confirmed by provider docs (_DOC_VISION, verified 2026-09);
+# 3. an id heuristic for unknown models.
+# 1 and 2 are persisted by prefs (models_cache JSON) across restarts.
+_DOC_VISION = {
+    "deepseek": frozenset({"deepseek-flash"}),   # deepseek-v4-pro: no vision
+    "zai": frozenset({"glm-4.5v", "glm-4.6v"}),
+}
 _VISION_ID_HINTS = frozenset({
-    "glm-4.5v", "glm-4.6v", "glm-4v", "gpt-4o", "gpt-4o-mini", "gpt-4.1",
+    "glm-4.5v", "glm-4.6v", "glm-4v", "gpt-4o", "gpt-4.1", "gpt-5",
     "claude", "gemini", "llama-3.2-90b-vision", "qwen-vl", "pixtral",
     "vlm", "vision",
 })
 _VISION_MODELS = {}  # provider_id -> frozenset(ids with image input)
+_NO_VISION = {}      # provider_id -> frozenset(ids that rejected images)
 
 
 def text_part(text):
@@ -89,8 +101,6 @@ def image_part(data_url):
 
 def _vision_from_id(model):
     low = model.lower()
-    if "deepseek" in low:
-        return False
     return any(hint in low for hint in _VISION_ID_HINTS)
 
 
@@ -111,10 +121,37 @@ def remember_vision_models(provider_id, model_rows):
         _VISION_MODELS[provider_id] = frozenset(ids)
 
 
+def mark_no_vision(provider_id, model):
+    """The provider rejected an image for this model: never send it one again."""
+    _NO_VISION[provider_id] = _NO_VISION.get(provider_id, frozenset()) | {model}
+
+
+def vision_state():
+    """JSON-safe snapshot of learned capabilities (persisted by prefs)."""
+    return {"yes": {p: sorted(ids) for p, ids in _VISION_MODELS.items()},
+            "no": {p: sorted(ids) for p, ids in _NO_VISION.items()}}
+
+
+def load_vision_state(state):
+    """Restore :func:`vision_state` output (bad shapes are ignored)."""
+    if not isinstance(state, dict):
+        return
+    for key, target in (("yes", _VISION_MODELS), ("no", _NO_VISION)):
+        rows = state.get(key)
+        if not isinstance(rows, dict):
+            continue
+        for provider_id, ids in rows.items():
+            if isinstance(ids, list):
+                target[str(provider_id)] = frozenset(str(i) for i in ids)
+
+
 def supports_vision(provider_id, model):
     """Whether this provider+model accepts image content parts."""
-    known = _VISION_MODELS.get(provider_id)
-    if known is not None and model in known:
+    if model in _NO_VISION.get(provider_id, ()):
+        return False
+    if model in _VISION_MODELS.get(provider_id, ()):
+        return True
+    if model in _DOC_VISION.get(provider_id, ()):
         return True
     return _vision_from_id(model)
 
@@ -129,9 +166,11 @@ def auto_vision_model(provider_id):
     Prefers a model already known to accept images (from the ``/models``
     metadata cached by :func:`remember_vision_models`), then a static
     ``vision_model`` from PROVIDERS. Returns ``None`` when the provider
-    serves no vision model at all (e.g. DeepSeek platform).
+    serves no known vision model. Models that rejected images are skipped.
     """
-    ids = _VISION_MODELS.get(provider_id)
+    bad = _NO_VISION.get(provider_id, frozenset())
+    ids = (_VISION_MODELS.get(provider_id, frozenset())
+           | _DOC_VISION.get(provider_id, frozenset())) - bad
 
     def _rank(mid):
         low = mid.lower()
@@ -141,8 +180,8 @@ def auto_vision_model(provider_id):
 
     if ids:
         return min(ids, key=_rank)
-    provider = PROVIDERS.get(provider_id) or {}
-    return provider.get("vision_model")
+    model = (PROVIDERS.get(provider_id) or {}).get("vision_model")
+    return None if model in bad else model
 
 
 def _close_response(resp):

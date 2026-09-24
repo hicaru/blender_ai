@@ -38,10 +38,11 @@ def _render_view(view: str, center: Vector, radius: float,
     scene.collection.objects.link(cam)
     try:
         direction = _DIRS.get(view, _DIRS["iso"]).normalized()
-        cam_data.type = "ORTHO" if view in ("front", "side", "top") else "PERSP"
-        cam_data.lens = 35
+        cam_data.type = "ORTHO"  # fills the tile at any model size
         cam.location = center + direction * radius * 3
-        cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+        # the lens (-Z) must look back at the center, i.e. along -direction
+        cam.rotation_euler = (-direction).to_track_quat("-Z", "Y").to_euler()
+        cam_data.clip_end = radius * 10
         # exact framing over the asset bbox corners
         dg = bpy.context.evaluated_depsgraph_get()
         corners: list[float] = []
@@ -51,10 +52,7 @@ def _render_view(view: str, center: Vector, radius: float,
                     p = center + Vector((sx * radius, sy * radius, sz * radius))
                     corners += [p.x, p.y, p.z]
         _fit_loc, fit_scale = cam.camera_fit_coords(dg, corners)
-        if cam_data.type == "ORTHO":
-            cam_data.ortho_scale = max(2.0, fit_scale)
-        else:
-            cam.location = _fit_loc
+        cam_data.ortho_scale = max(0.5, fit_scale)
         scene.camera = cam
         scene.render.engine = "BLENDER_WORKBENCH"
         scene.display.shading.color_type = color_type
