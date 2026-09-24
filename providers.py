@@ -25,6 +25,7 @@ import requests
 
 __all__ = (
     "PROVIDERS",
+    "PROVIDER_ORDER",
     "ProviderCancelled",
     "ProviderError",
     "auto_vision_model",
@@ -41,8 +42,16 @@ __all__ = (
 
 
 PROVIDERS = {
+    "zaicoding": {
+        # GLM Coding Plan subscriptions only pass auth on the /coding/
+        # endpoints; pay-as-you-go z.ai keys use the plain paas v4 API.
+        "label": "Z.ai GLM Coding Plan",
+        "base_url": "https://api.z.ai/api/coding/paas/v4",
+        "default_model": "glm-4.6",
+        "vision_model": "glm-4.5v",  # auto captioner when the main model is text-only
+    },
     "zai": {
-        "label": "Z.ai (GLM, international)",
+        "label": "Z.ai (GLM, pay-as-you-go)",
         "base_url": "https://api.z.ai/api/paas/v4",
         "default_model": "glm-4.6",
         "vision_model": "glm-4.5v",  # auto captioner when the main model is text-only
@@ -67,6 +76,9 @@ PROVIDERS = {
     },
 }
 
+# Dropdown order (prefs reads this); must cover exactly PROVIDERS' keys.
+PROVIDER_ORDER = ("zaicoding", "zai", "bigmodel", "deepseek", "openrouter")
+
 
 class ProviderError(RuntimeError):
     """Raised for any provider/network/request-shape failure."""
@@ -87,13 +99,14 @@ class ProviderCancelled(ProviderError):
 _DOC_VISION = {
     "deepseek": frozenset({"deepseek-flash"}),   # deepseek-v4-pro: no vision
     "zai": frozenset({"glm-4.5v", "glm-4.6v"}),
+    "zaicoding": frozenset({"glm-4.5v", "glm-4.6v"}),
     "bigmodel": frozenset({"glm-4.5v", "glm-4.6v"}),
 }
 
 # /models lists may contain foreign entries (z.ai, for example, lists a
 # ``deepseek-flash`` proxy). Only these id prefixes count as the provider's
 # own model family; providers without an entry are kept verbatim.
-_MODEL_FILTERS = {"zai": "glm", "bigmodel": "glm"}
+_MODEL_FILTERS = {"zai": "glm", "zaicoding": "glm", "bigmodel": "glm"}
 _VISION_ID_HINTS = frozenset({
     "glm-4.5v", "glm-4.6v", "glm-4v", "gpt-4o", "gpt-4.1", "gpt-5",
     "claude", "gemini", "llama-3.2-90b-vision", "qwen-vl", "pixtral",

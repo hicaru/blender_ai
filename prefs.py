@@ -22,7 +22,7 @@ import bpy
 from . import providers
 
 # Fixed order also defines the enum default (first item).
-_PROVIDER_ORDER = ("zai", "deepseek", "openrouter")
+_PROVIDER_ORDER = providers.PROVIDER_ORDER  # single source of truth in providers.py
 
 # State of the background model-list fetch (at most one at a time).
 # result: {provider_id: [ids] | Exception}

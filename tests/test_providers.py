@@ -48,6 +48,26 @@ class TestEndpoints(unittest.TestCase):
             providers.PROVIDERS["bigmodel"]["default_model"], "glm-4.6"
         )
 
+    def test_zai_coding_plan_endpoint(self):
+        # GLM Coding Plan keys only authenticate on the /coding/ endpoints
+        self.assertEqual(
+            providers.PROVIDERS["zaicoding"]["base_url"],
+            "https://api.z.ai/api/coding/paas/v4",
+        )
+        self.assertEqual(
+            providers.PROVIDERS["zaicoding"]["default_model"], "glm-4.6"
+        )
+        self.assertFalse(providers.model_belongs("zaicoding", "deepseek-v4"))
+        self.assertTrue(providers.model_belongs("zaicoding", "glm-4.6"))
+
+    def test_provider_order_covers_all_providers(self):
+        # regression: bigmodel was added to PROVIDERS but missing from the
+        # dropdown order, so it never showed in the preferences enum
+        self.assertEqual(
+            set(providers.PROVIDER_ORDER), set(providers.PROVIDERS)
+        )
+        self.assertEqual(len(providers.PROVIDER_ORDER), len(providers.PROVIDERS))
+
     def test_deepseek_endpoint_and_model(self):
         self.assertEqual(
             providers.PROVIDERS["deepseek"]["base_url"],
