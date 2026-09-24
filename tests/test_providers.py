@@ -314,6 +314,60 @@ class TestListModels(unittest.TestCase):
         # the terminal finish_reason is surfaced for the harness
         self.assertEqual(result["finish_reason"], "tool_calls")
 
+    def test_stream_read_timeout_becomes_provider_error(self):
+        # z.ai goes silent mid-reasoning and the read times out; the raw
+        # urllib3 error used to surface verbatim in the chat UI
+        requests = providers.requests
+        _CAPTURED.clear()
+
+        class Dropped:
+            status_code = 200
+            text = ""
+
+            def iter_lines(self):
+                # the tests run against a requests stub; its RequestException
+                # mirrors urllib3's read-timeout error that z.ai streams hit
+                raise providers.requests.RequestException("Read timed out.")
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            return Dropped()
+
+        requests.post = fake_post
+        with self.assertRaises(providers.ProviderError) as ctx:
+            providers.chat_completions("zaicoding", "k", "glm-4.6", [],
+                                       stream=True)
+        self.assertIn("stream interrupted", str(ctx.exception))
+        # "timed out" keeps the agent's transient-retry matcher working
+        self.assertIn("timed out", str(ctx.exception))
+
+    def test_stream_gets_wide_read_window(self):
+        def sse(obj):
+            return "data: " + _json.dumps(obj)
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def iter_lines(self):
+                return iter([sse({"choices": [{"delta": {"content": "ok"},
+                                               "finish_reason": "stop"}]}),
+                             "data: [DONE]"])
+
+        requests = providers.requests
+        _CAPTURED.clear()
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            _CAPTURED.update(timeout=timeout)
+            return FakeResponse()
+
+        requests.post = fake_post
+        providers.chat_completions("zaicoding", "k", "glm-4.6", [],
+                                   stream=True)
+        # (connect, read-inactivity): read window widened past the default
+        self.assertEqual(_CAPTURED["timeout"], (90, 300.0))
+
     def test_streaming_surfaces_length_cutoff(self):
         """finish_reason=length must reach the result (auto-continue lever)."""
         def sse(obj):

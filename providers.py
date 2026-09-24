@@ -317,7 +317,18 @@ def _consume_stream(response, on_delta, stop_event=None):  # noqa: PLR0912, PLR0
     tool_calls = {}
     usage = {}
     finish_reason = ""
-    for raw in response.iter_lines():
+
+    def _safe_lines():
+        # Mid-stream connection drops surface as raw urllib3 errors; wrap
+        # them so callers see a ProviderError (whose text still contains
+        # "timed out" and keeps the agent's transient-retry matcher working).
+        try:
+            yield from response.iter_lines()
+        except requests.RequestException as exc:
+            raise ProviderError(
+                "stream interrupted before completion (%s)" % exc) from exc
+
+    for raw in _safe_lines():
         if stop_event is not None and stop_event.is_set():
             raise ProviderCancelled("stream stopped by user")
         if not raw:
@@ -505,8 +516,13 @@ def chat_completions(  # noqa: PLR0912, PLR0915
     attempt = 0
     while True:
         try:
+            # Streaming uses a wide read-inactivity window (connect, read):
+            # GLM thinking models can go silent for minutes mid-reasoning
+            # behind z.ai's gateway; the scalar default killed them with a
+            # Read timeout even though bytes eventually kept flowing.
+            net_timeout = (timeout, max(timeout, 300.0)) if stream else timeout
             response = requests.post(
-                url, headers=headers, json=payload, timeout=timeout,
+                url, headers=headers, json=payload, timeout=net_timeout,
                 stream=stream,
             )
         except requests.RequestException as exc:
