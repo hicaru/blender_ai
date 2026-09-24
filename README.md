@@ -85,7 +85,8 @@ blender --command extension install-file -r user_default -e _work/blender_ai-<ve
 
 1. Open the **AI** tab in the 3D View sidebar (N).
 2. In **Add-on Preferences** (Preferences → Get Extensions → Blender AI):
-   - pick a **Provider** (`zai`, `deepseek`, `openrouter`) and paste its **API key**;
+   - pick a **Provider** (`zaicoding` — Z.ai GLM Coding Plan, `deepseek`,
+     `openrouter`) and paste its **API key**;
    - the model list loads by itself; pick a model or leave it empty for the
      provider default (`deepseek-flash` for DeepSeek).
    - **Auto-approve generated code**: build scripts run without a confirmation

@@ -85,10 +85,10 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         items=_provider_items,
         update=_provider_update,
     )
-    api_key_zai: bpy.props.StringProperty(
+    api_key_zaicoding: bpy.props.StringProperty(
         update=_auto_fetch_update,
         name="Z.ai API Key",
-        description="API key for api.z.ai (stored in preferences plaintext, standard Blender behaviour)",
+        description="Z.ai GLM Coding Plan key from z.ai (coding endpoint; stored in preferences plaintext, standard Blender behaviour)",
         subtype='PASSWORD',
     )
     api_key_deepseek: bpy.props.StringProperty(

@@ -357,7 +357,7 @@ def scenario_vision(wm, prefs):
         check("rejection remembered", not providers.supports_vision("deepseek", "deepseek-flash"))
         caption = [c for c in calls if not c[2]]
         check("captioned by another provider automatically",
-              caption and caption[0][0] == "zai" and caption[0][1] == "glm-4.6v",
+              caption and caption[0][0] == "zaicoding" and caption[0][1] == "glm-4.6v",
               [(c[0], c[1]) for c in caption])
         last = calls[-1]
         check("retry carries the caption, not the image",
@@ -666,8 +666,8 @@ def main():
     # so the agent loop and the approval gate are exercised end to end.
     import types
     fake_prefs = types.SimpleNamespace(
-        provider="zai",
-        api_key_zai="test-key", api_key_deepseek="", api_key_openrouter="",
+        provider="zaicoding",
+        api_key_zaicoding="test-key", api_key_deepseek="", api_key_openrouter="",
         model="", temperature=0.4, auto_approve_code=False, history_limit=80,
         reasoning_effort="medium",
         export_dir="", models_cache="{}",
