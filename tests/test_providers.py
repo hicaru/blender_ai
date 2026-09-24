@@ -405,6 +405,7 @@ class TestResilience(unittest.TestCase):
         class Busy:
             status_code = 503
             text = "unavailable"
+            headers = {}
 
             def close(self):
                 calls.append("closed")
@@ -442,6 +443,7 @@ class TestResilience(unittest.TestCase):
         class Busy:
             status_code = 429
             text = "rate limited"
+            headers = {}
 
             def close(self):
                 pass
@@ -455,6 +457,61 @@ class TestResilience(unittest.TestCase):
         with self.assertRaises(providers.ProviderError):
             providers.chat_completions("deepseek", "k", "m", [], retries=1)
         self.assertEqual(len(calls), 2)  # initial + 1 retry
+
+    def test_retries_honor_retry_after(self):
+        sleeps = self._silent_sleep()
+        requests = providers.requests
+        _CAPTURED.clear()
+        calls = []
+
+        class Busy:
+            status_code = 429
+            text = ""
+            headers = {"Retry-After": "7"}
+
+            def close(self):
+                calls.append("closed")
+
+        ok = type("OK", (), {})()
+        ok.status_code = 200
+        ok.text = ""
+        ok._body = {"choices": [{"message": {"role": "assistant",
+                                             "content": "hi"}}],
+                    "usage": {}}
+        ok.json = lambda: ok._body
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            calls.append("post")
+            return Busy() if len(calls) == 1 else ok
+
+        requests.post = fake_post
+        result = providers.chat_completions("zai", "k", "glm-4.6", [],
+                                            retries=1)
+        self.assertEqual(result["message"]["content"], "hi")
+        self.assertEqual(sleeps, [7.0])  # Retry-After beats linear backoff
+
+    def test_rate_limit_empty_body_gets_hint(self):
+        self._silent_sleep()
+        requests = providers.requests
+        _CAPTURED.clear()
+
+        class Busy:
+            status_code = 429
+            text = ""
+            headers = {}
+
+            def close(self):
+                pass
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            return Busy()
+
+        requests.post = fake_post
+        with self.assertRaises(providers.ProviderError) as ctx:
+            providers.chat_completions("zai", "k", "glm-4.6", [], retries=0)
+        self.assertIn("rate limited", str(ctx.exception))
 
     def test_stop_event_cancels_stream(self):
         import threading

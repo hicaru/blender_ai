@@ -232,9 +232,12 @@ def list_models(provider_id, api_key, timeout=20):
         raise ProviderError("Network error talking to %s: %s" % (provider["label"], exc)) from exc
 
     if response.status_code != 200:
+        detail = response.text[:300].strip()
+        if response.status_code == 429 and not detail:
+            detail = "rate limited - retry shortly"
         raise ProviderError(
             "%s returned HTTP %d: %s"
-            % (provider["label"], response.status_code, response.text[:300])
+            % (provider["label"], response.status_code, detail)
         )
 
     try:
@@ -510,17 +513,25 @@ def chat_completions(  # noqa: PLR0912, PLR0915
             ) from exc
 
         if response.status_code in (429, 500, 502, 503, 504) and attempt < retries:
-            # transient: retry with linear backoff before giving up
+            # transient: back off before the next attempt; honor Retry-After
             attempt += 1
+            try:
+                delay = float(response.headers.get("Retry-After") or 0)
+            except (TypeError, ValueError):
+                delay = 0.0
             _close_response(response)
-            time.sleep(1.5 * attempt)
+            time.sleep(min(max(delay, 1.5 * attempt), 20.0))
             continue
 
         if response.status_code != 200:
             _close_response(response)
+            detail = response.text[:300].strip()
+            if response.status_code == 429 and not detail:
+                # z.ai throttles with an empty body; say so instead of a bare ":"
+                detail = "rate limited - too many requests, retry shortly"
             raise ProviderError(
                 "%s returned HTTP %d: %s"
-                % (provider["label"], response.status_code, response.text[:300])
+                % (provider["label"], response.status_code, detail)
             )
         break
 
