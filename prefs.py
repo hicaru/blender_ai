@@ -64,7 +64,15 @@ def _model_choice_update(self, context):
 
 
 def _auto_fetch_update(self, context):
-    """API key or provider changed: refresh model lists in the background."""
+    """API key changed: refresh model lists in the background."""
+    start_fetch(self)
+
+
+def _provider_update(self, context):
+    """Provider changed: drop a model left over from the previous provider
+    (e.g. deepseek-flash when switching to Z.ai), then refresh lists."""
+    if self.model.strip() and not providers.model_belongs(self.provider, self.model):
+        self.model = ""
     start_fetch(self)
 
 
@@ -75,7 +83,7 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         name="Provider",
         description="LLM provider (OpenAI-compatible chat completions)",
         items=_provider_items,
-        update=_auto_fetch_update,
+        update=_provider_update,
     )
     api_key_zai: bpy.props.StringProperty(
         update=_auto_fetch_update,

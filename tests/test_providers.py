@@ -156,6 +156,25 @@ class TestListModels(unittest.TestCase):
         self.assertEqual(_CAPTURED["headers"]["Authorization"], "Bearer key-1")
         self.assertEqual(ids, ["model-a", "model-b"])  # sorted, no-id skipped
 
+    def test_zai_filters_foreign_models(self):
+        # z.ai lists a deepseek-flash proxy; only glm* ids are kept
+        self._install_get(body={"data": [{"id": "deepseek-flash"},
+                                         {"id": "glm-4.5v"},
+                                         {"id": "glm-4.6"}]})
+        ids = providers.list_models("zai", "key-1")
+        self.assertEqual(ids, ["glm-4.5v", "glm-4.6"])
+
+    def test_zai_keeps_raw_list_when_family_missing(self):
+        # provider renamed its families: fall back to the unfiltered list
+        self._install_get(body={"data": [{"id": "brand-new-model"}]})
+        ids = providers.list_models("zai", "key-1")
+        self.assertEqual(ids, ["brand-new-model"])
+
+    def test_model_belongs(self):
+        self.assertTrue(providers.model_belongs("zai", "glm-4.6"))
+        self.assertFalse(providers.model_belongs("zai", "deepseek-flash"))
+        self.assertTrue(providers.model_belongs("openrouter", "anything/at-all"))
+
     def test_openrouter_keyless(self):
         self._install_get(body={"data": [{"id": "openai/gpt-4o-mini"}]})
         ids = providers.list_models("openrouter", "")
