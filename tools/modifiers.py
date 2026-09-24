@@ -1,8 +1,11 @@
 """Modifier tools: add / configure / remove / apply / list."""
 
+import json
+
 import bpy
 
 from . import ToolError, register
+from .scene import _ensure_object_mode
 
 # Friendly name -> Blender modifier type (Modify/Generate/Deform categories).
 _MODIFIER_TYPES = {
@@ -31,14 +34,36 @@ def _get_object(name):
     return obj
 
 
+def _resolve_pointer(mod, key, value):
+    """Resolve object-name strings for ID-pointer modifier props.
+
+    boolean.object, mirror.mirror_object and shrinkwrap.target are Object
+    pointers; setattr with a plain string leaves the pointer None.
+    Resolve names to datablocks first.
+    """
+    if not isinstance(value, str):
+        return value
+    prop = mod.bl_rna.properties.get(key)
+    if (prop is None or prop.type != 'POINTER'
+            or prop.fixed_type is None
+            or prop.fixed_type.identifier != 'Object'):
+        return value
+    target = bpy.data.objects.get(value)
+    if target is None:
+        raise ToolError("no object named %r for %r.%s" % (value, mod.name, key))
+    return target
+
+
 def _apply_settings(mod, settings, applied, skipped):
     for key, value in settings.items():
         if key.startswith("_") or not hasattr(mod, key):
             skipped.append(key)
             continue
         try:
-            setattr(mod, key, value)
+            setattr(mod, key, _resolve_pointer(mod, key, value))
             applied.append(key)
+        except ToolError:
+            raise
         except (TypeError, ValueError, AttributeError):
             skipped.append(key)
 
@@ -91,17 +116,17 @@ def apply_modifier(object, modifier):
     obj = _get_object(object)
     if obj.modifiers.get(modifier) is None:
         raise ToolError("%r has no modifier named %r" % (object, modifier))
+    _ensure_object_mode()
     bpy.context.view_layer.objects.active = obj
     try:
         bpy.ops.object.modifier_apply(modifier=modifier)
     except RuntimeError as exc:
-        raise ToolError("apply failed: %s" % exc)
+        raise ToolError("apply failed: %s" % exc) from exc
     return "applied modifier %r on %r" % (modifier, object)
 
 
 def list_modifiers(object):
     """Return a JSON string describing an object's modifiers and key params."""
-    import json
     obj = _get_object(object)
     result = []
     for mod in obj.modifiers:
@@ -123,8 +148,9 @@ def register_tools():
         "Pass settings as extra keyword arguments matching Blender modifier "
         "attributes (e.g. subdivision: levels, render_levels, viewport; "
         "bevel: width, segments, angle_limit; mirror: use_axis_x/y/z, "
-        "mirror_object; array: count, relative_offset_displace; "
-        "boolean: object, operation; weld: merge_threshold).",
+        "mirror_object=<object name>; array: count, relative_offset_displace; "
+        "boolean: object=<cutter object name>, operation; weld: "
+        "merge_threshold; shrinkwrap: target=<object name>).",
         {
             "type": "object",
             "properties": {

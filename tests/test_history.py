@@ -162,3 +162,34 @@ class TestReconcile(unittest.TestCase):
                          ["assistant", "tool", "assistant", "tool"])
         self.assertEqual([m["tool_call_id"] for m in out if m["role"] == "tool"],
                          ["1", "2"])
+
+
+class TestOutgoingSnapshot(unittest.TestCase):
+    def test_internal_keys_and_error_roles_stripped(self):
+        # Local "error" messages and internal keys must never reach the
+        # provider.
+        msgs = [
+            history.message("system", content="sys"),
+            history.message("user", content="go"),
+            {"role": "error", "content": "HTTP 500", "kind": "transport"},
+            history.message("assistant", content="", reasoning="deep-thought",
+                            tool_name="run_python",
+                            tool_calls=[tool_call("1", "run_python", "{}")]),
+            history.message("tool", content="ok", tool_call_id="1",
+                            approval="done"),
+        ]
+        out = history.outgoing_snapshot(msgs)
+        self.assertEqual(
+            [m["role"] for m in out],
+            ["system", "user", "assistant", "tool"],
+        )
+        for msg in out:
+            for key in history._INTERNAL_KEYS:
+                self.assertNotIn(key, msg)
+
+    def test_snapshot_is_a_copy(self):
+        msgs = [history.message("user", content="x", reasoning="r")]
+        out = history.outgoing_snapshot(msgs)
+        self.assertIsNot(out[0], msgs[0])
+        self.assertIn("reasoning", msgs[0])  # original untouched
+        self.assertNotIn("reasoning", out[0])

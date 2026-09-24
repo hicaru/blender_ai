@@ -103,6 +103,26 @@ def to_json(messages):
     return json.dumps(messages, ensure_ascii=False)
 
 
+_INTERNAL_KEYS = ("reasoning", "approval", "tool_name")
+_SENDABLE_ROLES = frozenset({"system", "user", "assistant", "tool", "developer"})
+
+
+def outgoing_snapshot(messages):
+    """Provider-bound copy of the history (pure, unit-tested).
+
+    - strips internal keys ("reasoning" / "approval" / "tool_name");
+    - drops internal-only roles: OpenAI-compatible APIs reject unknown
+      roles such as the addon's local "error" entries, so leaving them in
+      would make every subsequent request fail with HTTP 400;
+    - reconcile()s dangling tool_calls/results away.
+    """
+    return [
+        {k: v for k, v in msg.items() if k not in _INTERNAL_KEYS}
+        for msg in reconcile(messages)
+        if msg.get("role") in _SENDABLE_ROLES
+    ]
+
+
 def from_json(text):
     data = json.loads(text)
     if not isinstance(data, list):

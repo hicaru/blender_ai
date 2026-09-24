@@ -40,6 +40,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final, Literal
 
+try:
+    from . import debuglog
+except ImportError:  # loaded standalone by the pure-python test harness
+    debuglog = None
+
 __all__ = [
     "LoopDecision",
     "Note",
@@ -216,20 +221,27 @@ class SkillStore:
             raw = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return SkillState()
-        data = json.loads(raw)
-        notes = tuple(
-            Note(
-                id=str(n["id"]),
-                kind=n["kind"],
-                content=str(n["content"]),
-                created_at=str(n["created_at"]),
-                updated_at=str(n["updated_at"]),
-                source=str(n.get("source", "system")),
-                confidence=float(n.get("confidence", BASE_CONFIDENCE)),
-                count=int(n.get("count", 1)),
+        try:
+            data = json.loads(raw)
+            notes = tuple(
+                Note(
+                    id=str(n["id"]),
+                    kind=n["kind"],
+                    content=str(n["content"]),
+                    created_at=str(n["created_at"]),
+                    updated_at=str(n["updated_at"]),
+                    source=str(n.get("source", "system")),
+                    confidence=float(n.get("confidence", BASE_CONFIDENCE)),
+                    count=int(n.get("count", 1)),
+                )
+                for n in data.get("notes", ())
             )
-            for n in data.get("notes", ())
-        )
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError) as exc:
+            # Quarantine a corrupt store instead of crashing the caller:
+            # load() runs inside the Send operator, with the user message
+            # already added to the history.
+            self._quarantine(exc)
+            return SkillState()
         return SkillState(
             name=str(data.get("name", "blender-agent")),
             scope=str(data.get("scope", "blender scene building")),
@@ -237,6 +249,17 @@ class SkillStore:
             version=int(data.get("version", 1)),
             updated_at=str(data.get("updated_at", _now())),
         )
+
+    def _quarantine(self, exc: Exception) -> None:
+        """Move an unreadable store aside so the next save can start fresh."""
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        quarantine = self._path.with_name(f"skill_state.corrupt-{stamp}.json")
+        if debuglog is not None:
+            debuglog.warn(f"corrupt skill_state.json ({exc}); quarantined")
+        try:
+            self._path.replace(quarantine)
+        except OSError:
+            pass  # best-effort: the fresh default state still lets the chat work
 
     def save(self, state: SkillState) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -604,10 +627,10 @@ def resolve_store_dir(configured: str) -> Path:
 
 def on_round_failure(error_text: str, bound: int, store_dir: str) -> LoopDecision:
     loop = get_loop(resolve_store_dir(store_dir))
-    decision = loop.on_failure(error_text, bound)
-    store = SkillStore(resolve_store_dir(store_dir))
-    store.add_note(error_signature(error_text), classify_error(error_text))
-    return decision
+    # No durable note here: round failures at this point are provider or
+    # transport errors (401/timeout/5xx) — recording their first line used
+    # to permanently pollute the injected note bank for every future chat.
+    return loop.on_failure(error_text, bound)
 
 
 def on_round_success(summary: str, store_dir: str) -> LoopDecision:
@@ -642,8 +665,10 @@ def inject_into_request(messages: list[dict], store_dir: str) -> None:
     """Attach the durable-knowledge block to a request's messages in place.
 
     Idempotent: the previously injected system message (found by marker) is
-    replaced or removed, so repeated rounds never stack duplicates. Stored
-    history keeps the block harmlessly; it is refreshed on every send.
+    replaced or removed, so repeated rounds never stack duplicates. The
+    caller passes a request-only snapshot (history.outgoing_snapshot), so
+    the block is never persisted into the .blend nor truncated later by
+    history.trim() — it rides every request, and only requests.
     While the repair loop is active, the block also carries the loop's
     focus (the failure signature) and instructs a changed approach — the
     loop's bounded action for this iteration.

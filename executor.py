@@ -17,17 +17,13 @@ import bpy
 import math
 import mathutils
 
+from .prefs import get_prefs
 from .tools import TOOL_REGISTRY, ToolError
 from .tools import tools_schema as _tools_schema  # re-export
 
 __all__ = ("dispatch", "execute_python", "tools_schema")
 
 _MAX_OUTPUT = 4000
-
-
-def _prefs():
-    addon = bpy.context.preferences.addons.get(__package__)
-    return addon.preferences if addon else None
 
 
 def dispatch(name, arguments, force=False):
@@ -46,15 +42,9 @@ def dispatch(name, arguments, force=False):
     if tool is None:
         return {"ok": False, "result": "ERROR: unknown tool %r" % name}
 
-    prefs = _prefs()
+    prefs = get_prefs()
     if tool["approval"] == "code" and not force and not (prefs and prefs.auto_approve_code):
         return {"pending": True, "kind": "code"}
-
-    if not bpy.app.background:
-        try:
-            bpy.ops.ed.undo_push(message="AI: %s" % name)
-        except RuntimeError:
-            pass
 
     try:
         result = tool["func"](**arguments)
@@ -64,6 +54,14 @@ def dispatch(name, arguments, force=False):
         return {"ok": False, "result": "ERROR: bad arguments: %s" % exc}
     except Exception as exc:  # noqa: BLE001 — tool results must stay strings
         return {"ok": False, "result": "ERROR: %s: %s" % (type(exc).__name__, exc)}
+
+    # Undo step AFTER the change succeeded: pushed before, Ctrl+Z would
+    # first "eat" the agent's step instead of reverting its effect.
+    if not bpy.app.background:
+        try:
+            bpy.ops.ed.undo_push(message="AI: %s" % name)
+        except RuntimeError:
+            pass
 
     if tool.get("pause"):
         return {"pending": True, "kind": "ask"}

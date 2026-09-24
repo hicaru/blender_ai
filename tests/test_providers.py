@@ -79,8 +79,8 @@ class TestChatCompletions(unittest.TestCase):
     def test_nonstream_message_normalized(self):
         # Relays sometimes send content as null / a list of parts and
         # function arguments as a dict; the message must come back in the
-        # streaming shape regardless (raw shapes used to crash the Blender
-        # UI timer, leaving a permanent busy spinner).
+        # streaming shape regardless — a raw shape reaching the Blender UI
+        # timer crashes it and leaves a permanent busy spinner.
         _install_post(body={"choices": [{"message": {
             "role": "assistant",
             "content": [{"type": "text", "text": "he"}],

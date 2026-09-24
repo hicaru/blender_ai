@@ -175,6 +175,9 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "reasoning_effort")
         layout.prop(self, "auto_approve_code")
         layout.prop(self, "history_limit")
+        # Repair-loop settings — declared above, so expose them here too.
+        layout.prop(self, "repair_bound")
+        layout.prop(self, "skill_store")
 
 
 def get_prefs():

@@ -6,15 +6,6 @@ import bpy
 
 from . import ToolError, register
 
-# Principled BSDF numeric/scalar inputs exposed to the agent (subset that is
-# well-defined across Blender 4.x/5.x). Color inputs accept [r,g,b,a].
-_KNOWN_INPUTS = {
-    "Base Color", "Metallic", "Roughness", "IOR", "Alpha",
-    "Emission Color", "Emission Strength",
-    "Specular IOR Level", "Coat Weight", "Coat Roughness",
-    "Sheen Weight", "Transmission Weight",
-}
-
 
 def _get_object(name):
     obj = bpy.data.objects.get(name)
@@ -36,17 +27,25 @@ def _set_input(node, name, value):
     socket = node.inputs.get(name)
     if socket is None:
         raise ToolError("unknown Principled input %r" % name)
+    # RGBA sockets need exactly 4 components; plain RGB raises
+    # "invalid value [1, 0, 0]" on the Base Color socket.
+    if (socket.type == 'RGBA' and isinstance(value, (list, tuple))
+            and len(value) == 3):
+        value = (value[0], value[1], value[2], 1.0)
     try:
         socket.default_value = value
-    except (TypeError, ValueError):
-        raise ToolError("invalid value %r for input %r" % (value, name))
+    except (TypeError, ValueError) as exc:
+        raise ToolError("invalid value %r for input %r" % (value, name)) from exc
 
 
 def create_material(name, base_color_rgba=None, metallic=None, roughness=None,
                     emission_strength=None):
     """Create (or reuse) a material with a Principled BSDF."""
     mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
-    mat.use_nodes = True
+    if not mat.use_nodes:
+        # New materials already carry a node tree; assigning the flag
+        # unconditionally triggers a deprecation warning (removed in 6.0).
+        mat.use_nodes = True
     node = _principled(mat)
     if base_color_rgba is not None:
         _set_input(node, "Base Color", base_color_rgba)
@@ -118,6 +117,7 @@ def register_tools():
                 "base_color_rgba": {
                     "type": "array", "items": {"type": "number"},
                     "minItems": 3, "maxItems": 4,
+                    "description": "RGB or RGBA, 0..1 (alpha defaults to 1)",
                 },
                 "metallic": {"type": "number", "minimum": 0, "maximum": 1},
                 "roughness": {"type": "number", "minimum": 0, "maximum": 1},

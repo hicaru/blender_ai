@@ -2,6 +2,7 @@
 
 import json
 import textwrap
+import time
 
 import bpy
 
@@ -16,6 +17,12 @@ _TOOL_RUN_PREVIEW = 3  # tool-log tail shown before "… N earlier tool calls"
 _TOOL_PREVIEW = 60     # characters of a tool result shown per log line
 _LOOP_RECORD_PREVIEW = 6   # record.md entries shown in the loop section
 _LOOP_LINE_PREVIEW = 3     # body lines shown per record entry
+_LOOP_CACHE_TTL = 2.0      # seconds; the spinner redraws every ~80 ms
+
+# The loop section reads state.md / record.md from disk. A cached read
+# keeps redraws cheap while the agent runs: the spinner repaints the
+# panel about every 80 ms.
+_loop_cache = {"at": 0.0, "data": None}
 
 
 def _preview(content):
@@ -67,8 +74,8 @@ class AI_PT_chat(bpy.types.Panel):
             i += 1
 
         # 2+3. Parked tool call (code approval or question), derived from
-        # agent state — Blender's undo reverts WM props and used to blank
-        # these boxes while the loop stayed parked (deadlock).
+        # agent state — Blender's undo reverts WM props and would blank
+        # these boxes while the loop stays parked (deadlock).
         pending = agent.pending_view()
         if pending and pending["kind"] == "code":
             box = layout.box()
@@ -149,7 +156,14 @@ class AI_PT_chat(bpy.types.Panel):
 
         box = layout.box()
         box.label(text="Repair loop", icon='LOOP_FORWARDS')
-        fields = loop_state.read_state_fields(store)
+        now = time.monotonic()
+        if _loop_cache["data"] is None or now - _loop_cache["at"] > _LOOP_CACHE_TTL:
+            _loop_cache["data"] = (
+                loop_state.read_state_fields(store),
+                loop_state.read_record_entries(store, last_n=_LOOP_RECORD_PREVIEW),
+            )
+            _loop_cache["at"] = now
+        fields, entries = _loop_cache["data"]
         if not fields:
             box.label(text="Idle — no loop has run yet", icon='INFO')
         else:
@@ -157,9 +171,6 @@ class AI_PT_chat(bpy.types.Panel):
             for name in loop_state.STATE_FIELDS:
                 self._draw_wrapped(col, "%s: %s" % (name, fields.get(name, "")))
 
-        entries = loop_state.read_record_entries(
-            store, last_n=_LOOP_RECORD_PREVIEW,
-        )
         rec = box.box()
         rec.label(text="Record (latest %s)" % len(entries) if entries else "Record")
         if not entries:

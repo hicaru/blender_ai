@@ -25,6 +25,22 @@ _PRIMITIVE_OPS = {
 QUAD_SPHERE = "quad_sphere"
 
 
+def _ensure_object_mode():
+    """Force Object Mode before object/mesh bpy.ops tools run.
+
+    In Edit Mode a new primitive merges into the object being edited and
+    rename_object renames the user's object; select/join ops also
+    poll-fail. Mode changes are data-safe, so they are made implicitly.
+    """
+    mode = bpy.context.mode
+    if mode == "OBJECT":
+        return
+    try:
+        bpy.ops.object.mode_set(mode="OBJECT")
+    except RuntimeError as exc:
+        raise ToolError("cannot leave %s to run the tool: %s" % (mode, exc)) from exc
+
+
 def _get_object(name):
     obj = bpy.data.objects.get(name)
     if obj is None:
@@ -42,6 +58,7 @@ def _apply_transform(obj, location, rotation, scale):
 
 
 def _link_and_select(obj):
+    _ensure_object_mode()
     bpy.context.scene.collection.objects.link(obj)
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
@@ -69,9 +86,13 @@ def create_primitive(kind, name=None, location=None, rotation=None, scale=None):
             "unknown kind %r; use one of: %s, %s"
             % (kind, ", ".join(sorted(_PRIMITIVE_OPS)), QUAD_SPHERE)
         )
+    _ensure_object_mode()
     if kind == QUAD_SPHERE:
         obj = _make_quad_sphere(name or "QuadSphere")
         _link_and_select(obj)
+        # quad_sphere is built via bmesh, not an operator, so its
+        # transform must be applied explicitly.
+        _apply_transform(obj, location, rotation, scale)
     else:
         kwargs = {}
         if location is not None:
@@ -130,6 +151,7 @@ def join_objects(objects):
     """Join objects into the first one."""
     if len(objects) < 2:
         raise ToolError("join needs at least 2 objects")
+    _ensure_object_mode()
     objs = [_get_object(n) for n in objects]
     target = objs[0]
     bpy.ops.object.select_all(action='DESELECT')

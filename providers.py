@@ -211,7 +211,15 @@ def _consume_stream(response, on_delta, stop_event=None):
     if reasoning_parts:
         message["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:
-        message["tool_calls"] = [tool_calls[key] for key in sorted(tool_calls)]
+        calls = [tool_calls[key] for key in sorted(tool_calls)]
+        for i, call in enumerate(calls):
+            if not call["id"]:
+                # Some relays stream tool_call deltas with no id; an empty
+                # id makes history.reconcile() drop the tool result, leaving
+                # an unanswered tool_call. Same deterministic fallback as
+                # _normalize_message().
+                call["id"] = "call_%d" % (i + 1)
+        message["tool_calls"] = calls
     return message, usage, finish_reason
 
 
@@ -221,8 +229,8 @@ def _normalize_message(raw):
     Streaming builds this shape while consuming deltas; the non-streaming
     branch trusts the relay, which sometimes sends ``content`` as ``None``
     or a list of parts, or ``tool_calls[].function.arguments`` as a dict —
-    all of which break Blender property assignment later and used to kill
-    the polling timer (permanent busy spinner).
+    all of which break Blender property assignment later and kill the
+    polling timer (permanent busy spinner) unless normalized here.
     """
     raw = raw if isinstance(raw, dict) else {}
     content = raw.get("content")

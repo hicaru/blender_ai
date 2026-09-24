@@ -164,6 +164,29 @@ class TestSkillStore(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.add_note("   ", "failure")
 
+    def test_corrupt_store_quarantined_not_raised(self):
+        # A broken skill_state.json must not raise JSONDecodeError out of
+        # Send; load() quarantines the file and returns a default state.
+        self.store.add_note("keep", "task_pattern")  # create the file
+        self._tmp.name and (self.store._path.write_text("{broken json!!", encoding="utf-8"))
+        state = self.store.load()
+        self.assertEqual(state.notes, ())
+        self.assertFalse(self.store._path.exists())  # moved aside
+        quarantined = list(self.store._path.parent.glob("skill_state.corrupt-*.json"))
+        self.assertEqual(len(quarantined), 1)
+        # Store still usable afterwards (save starts fresh).
+        self.store.add_note("fresh", "task_pattern")
+        self.assertEqual(len(self.store.load().notes), 1)
+
+    def test_on_round_failure_no_permanent_note(self):
+        # Provider/transport failures must not become durable notes: the
+        # loop retries, but the note bank stays untouched.
+        decision = loop_state.on_round_failure(
+            "Z.ai returned HTTP 401 unauthorized", bound=2, store_dir=self._tmp.name,
+        )
+        self.assertEqual(decision.action, "continue")
+        self.assertEqual(self.store.load().notes, ())
+
 
 class TestInjection(unittest.TestCase):
     def setUp(self):

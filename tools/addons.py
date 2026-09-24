@@ -56,8 +56,10 @@ def _resolve_repo_directory(repo_module):
 
 
 def _download_zip(url):
-    if not url.lower().startswith(("https://", "http://")):
-        raise ToolError("source URL must start with http(s)://")
+    if not url.lower().startswith("https://"):
+        # Plain http allows tampered extension zips; Blender's own
+        # extension repos are https-only too.
+        raise ToolError("source URL must start with https://")
     if not bpy.app.online_access:
         raise ToolError("Blender's online access is disabled")
     import os
@@ -68,8 +70,8 @@ def _download_zip(url):
         response = requests.get(url, timeout=60, stream=True)
         response.raise_for_status()
     except requests.RequestException as exc:
-        raise ToolError("download failed: %s" % exc)
-    data = b""
+        raise ToolError("download failed: %s" % exc) from exc
+    data = bytearray()
     for chunk in response.iter_content(chunk_size=1 << 16):
         data += chunk
         if len(data) > _MAX_URL_BYTES:
@@ -88,6 +90,8 @@ def install_extension(source, repo="user_default", enable=True):
     """
     source = str(source).strip()
     if source.lower().startswith(("http://", "https://")):
+        if source.lower().startswith("http://"):
+            raise ToolError("only https:// URLs are accepted")
         filepath = _download_zip(source)
         cleanup = True
     else:

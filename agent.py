@@ -22,8 +22,7 @@ import bpy
 from bpy.app.handlers import persistent
 
 from . import debuglog, history, loop_state, providers
-
-PACKAGE = __package__
+from .prefs import get_prefs
 
 # Single agent state. ``messages`` is the source of truth (list[dict]);
 # the WindowManager collection is a render copy kept in sync.
@@ -85,14 +84,10 @@ def restore_history():
 
 # --------------------------------------------------------------------------- prefs
 
-def _prefs():
-    addon = bpy.context.preferences.addons.get(PACKAGE)
-    return addon.preferences if addon else None
-
 
 def _request_params():
     """Snapshot provider settings on the main thread (no bpy in the worker)."""
-    prefs = _prefs()
+    prefs = get_prefs()
     if prefs is None:
         raise providers.ProviderError("Add-on preferences not found.")
     return {
@@ -245,7 +240,9 @@ def _on_load_post(_scene, _depsgraph):
     # Opening (or creating) a file switches chats: reset the session —
     # stop the worker, drop pending approvals — then load the history
     # stored inside the freshly opened .blend (none for a new project).
-    new_chat()
+    # Never call new_chat() here: it would delete the very key we are
+    # about to restore from.
+    _reset_session()
     restore_history()
 
 
@@ -255,8 +252,8 @@ def pending_view():
     """Undo-proof snapshot of the parked call: None or {kind, name, args}.
 
     WM props get reverted by Blender's undo (each tool dispatch pushes an
-    undo step), which used to blank the approve/answer boxes while the
-    loop stayed parked. The pending dict is the single source of truth;
+    undo step), which would blank the approve/answer boxes while the
+    loop stays parked. The pending dict is the single source of truth;
     panel and operators derive from it.
     """
     pending = _STATE["pending"]
@@ -278,12 +275,12 @@ def pending_view():
 
 def _loop_store_dir() -> str:
     """Skill-store dir from preferences ('' lets loop_state pick a default)."""
-    prefs = _prefs()
+    prefs = get_prefs()
     return str(getattr(prefs, "skill_store", "") or "")
 
 
 def _repair_bound() -> int:
-    prefs = _prefs()
+    prefs = get_prefs()
     try:
         return max(1, int(getattr(prefs, "repair_bound", 3)))
     except (TypeError, ValueError):
@@ -318,7 +315,6 @@ def send_user_message(text):
         return
 
     _set_status("thinking…")
-    loop_state.inject_into_request(_STATE["messages"], _loop_store_dir())
     _spawn(params)
 
 
@@ -333,14 +329,11 @@ def _request_messages(params):
 def _spawn(params):
     from .executor import tools_schema  # lazy: executor may not exist yet
 
-    # Internal keys ("reasoning", "approval", "tool_name") must not go to
-    # the provider — e.g. DeepSeek rejects reasoning_content on input.
-    # reconcile(): repair dangling tool_calls/results so a request can
-    # never go out in a protocol-invalid shape.
-    snapshot = [
-        {k: v for k, v in m.items() if k not in ("reasoning", "approval", "tool_name")}
-        for m in history.reconcile(_request_messages(params))
-    ]
+    # Provider-bound snapshot: internal keys stripped, local "error" roles
+    # dropped, dangling tool_calls repaired by reconcile().
+    # Skill notes ride this request-only copy — never the persisted history.
+    snapshot = history.outgoing_snapshot(_request_messages(params))
+    loop_state.inject_into_request(snapshot, _loop_store_dir())
     stop_event = threading.Event()
     _STATE["stop_event"] = stop_event
     _STATE["stop_requested"] = False
@@ -411,7 +404,7 @@ def _update_live_status():
 
 def _poll():
     # A timer callback that raises is silently unregistered by Blender,
-    # which used to leave the spinner running forever. Fail loudly
+    # which would leave the spinner running forever. Fail loudly
     # (chat + /tmp log) instead.
     try:
         return _poll_run()
@@ -462,8 +455,8 @@ def _poll_run():
         if decision.action == "continue":
             # Repair loop: bounded automatic retry with the failure
             # signature carried in durable context (one iteration = one
-            # round; loop files live under the skill store).
-            loop_state.inject_into_request(_STATE["messages"], store)
+            # round; loop files live under the skill store). The retry's
+            # _spawn() injects the block into its request snapshot.
             _set_status(f"repairing ({decision.iteration}/{decision.bound})…")
             try:
                 params = _request_params()
@@ -495,7 +488,7 @@ def _apply_assistant_message(message, finish_reason=""):
         # One silent rescue per user message: retry with lowered effort
         # before showing the user an explanation.
         current = (_STATE.get("params") or {}).get("reasoning_effort", "")
-        if _STATE["empty_retries"] < 1 and current not in ("low", "off"):
+        if _STATE["empty_retries"] < 1 and current != "off":
             _STATE["empty_retries"] += 1
             params = dict(_STATE.get("params") or {})
             params["reasoning_effort"] = "off" if current == "low" else "low"
@@ -706,7 +699,13 @@ def stop():
     _set_busy(False)
 
 
-def new_chat():
+def _reset_session():
+    """Drop the in-memory session: worker, pending approvals, messages.
+
+    Never touches the persisted scene key — new_chat() deletes it, while
+    load_post must not (the freshly opened .blend holds the chat that
+    restore_history() reads back).
+    """
     stop()
     _STATE["messages"] = []
     _STATE["pending"] = None
@@ -715,11 +714,15 @@ def new_chat():
     wm = _wm()
     wm.blender_ai_ask_answer = ""
     wm.blender_ai_live = ""
+    sync_ui()
+    _set_status("Ready.")
+
+
+def new_chat():
+    _reset_session()
     scene = bpy.context.scene
     if scene is not None and scene.get(_SCENE_KEY) is not None:
         del scene[_SCENE_KEY]
-    sync_ui()
-    _set_status("Ready.")
 
 
 # --------------------------------------------------------------------------- registration
