@@ -38,6 +38,16 @@ class TestEndpoints(unittest.TestCase):
         )
         self.assertEqual(providers.PROVIDERS["zai"]["default_model"], "glm-4.6")
 
+    def test_bigmodel_endpoint_and_model(self):
+        # Zhipu's China platform — keys from bigmodel.cn do NOT work on api.z.ai
+        self.assertEqual(
+            providers.PROVIDERS["bigmodel"]["base_url"],
+            "https://open.bigmodel.cn/api/paas/v4",
+        )
+        self.assertEqual(
+            providers.PROVIDERS["bigmodel"]["default_model"], "glm-4.6"
+        )
+
     def test_deepseek_endpoint_and_model(self):
         self.assertEqual(
             providers.PROVIDERS["deepseek"]["base_url"],
