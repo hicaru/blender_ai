@@ -308,6 +308,40 @@ class TestListModels(unittest.TestCase):
         self.assertEqual(result["message"]["content"], "partial answer")
 
 
+"""Tests for providers.auto_vision_model zero-config captioner pick."""
+# mypy: ignore-errors
+
+import _common
+
+providers = _common.load_module("providers")
+
+
+class AutoVisionModelTests(unittest.TestCase):
+    def test_unknown_provider_returns_none(self):
+        self.assertIsNone(providers.auto_vision_model("nope"))
+
+    def test_deepseek_no_vision_model_returns_none(self):
+        self.assertIsNone(providers.auto_vision_model("deepseek"))
+
+    def test_zai_static_fallback(self):
+        self.assertEqual(providers.auto_vision_model("zai"), "glm-4.5v")
+
+    def test_cached_vision_metadata_wins(self):
+        providers.remember_vision_models(
+            "openrouter",
+            [{"id": "deepseek/deepseek-chat"},
+             {"id": "qwen/qwen2.5-vl-72b",
+              "architecture": {"input_modalities": ["text", "image"]}},
+             {"id": "mistral/pixtral-large",
+              "architecture": {"input_modalities": ["text", "image"]}}],
+        )
+        try:
+            self.assertEqual(providers.auto_vision_model("openrouter"),
+                             "mistral/pixtral-large")
+        finally:
+            providers._VISION_MODELS.pop("openrouter", None)
+
+
 if __name__ == "__main__":
     unittest.main()
 

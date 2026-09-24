@@ -125,14 +125,16 @@ class AI_AddonPreferences(bpy.types.AddonPreferences):
         subtype="DIR_PATH",
     )
     vision_provider: bpy.props.StringProperty(
-        name="Vision provider (fallback)",
+        name="Vision provider (auto)",
         description="Provider used to caption attached images when the main "
                     "model has no vision. Empty = same as provider",
     )
     vision_model: bpy.props.StringProperty(
-        name="Vision model (fallback)",
+        name="Vision model (auto)",
         description="Model used to caption attached images when the main "
-                    "model has no vision. Empty = captions disabled",
+                    "model has no vision. Empty = picked automatically "
+                    "(z.ai: glm-4.5v; OpenRouter: first vision model from "
+                    "the /models list)",
     )
     tool_profile: bpy.props.EnumProperty(
         name="Tool profile",

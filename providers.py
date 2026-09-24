@@ -27,6 +27,7 @@ __all__ = (
     "PROVIDERS",
     "ProviderCancelled",
     "ProviderError",
+    "auto_vision_model",
     "chat_completions",
     "image_part",
     "list_models",
@@ -40,6 +41,7 @@ PROVIDERS = {
         "label": "Z.ai (GLM)",
         "base_url": "https://api.z.ai/api/paas/v4",
         "default_model": "glm-4.6",
+        "vision_model": "glm-4.5v",  # auto captioner when the main model is text-only
     },
     "deepseek": {
         "label": "DeepSeek",
@@ -115,6 +117,32 @@ def supports_vision(provider_id, model):
     if known is not None and model in known:
         return True
     return _vision_from_id(model)
+
+
+_VISION_PICK_HINTS = ("glm-4.6v", "glm-4.5v", "4v", "pixtral", "vl",
+                      "vision", "vlm")
+
+
+def auto_vision_model(provider_id):
+    """Zero-config captioner for a provider.
+
+    Prefers a model already known to accept images (from the ``/models``
+    metadata cached by :func:`remember_vision_models`), then a static
+    ``vision_model`` from PROVIDERS. Returns ``None`` when the provider
+    serves no vision model at all (e.g. DeepSeek platform).
+    """
+    ids = _VISION_MODELS.get(provider_id)
+
+    def _rank(mid):
+        low = mid.lower()
+        hint = next((i for i, h in enumerate(_VISION_PICK_HINTS) if h in low),
+                    len(_VISION_PICK_HINTS))
+        return (hint, mid)
+
+    if ids:
+        return min(ids, key=_rank)
+    provider = PROVIDERS.get(provider_id) or {}
+    return provider.get("vision_model")
 
 
 def _close_response(resp):

@@ -479,13 +479,15 @@ def _caption_via_vision_model(image_path):
     """One-shot caption with the prefs' vision provider/model; None on any failure."""
     import base64
 
-    from .providers import ProviderError, chat_completions, image_part, text_part
+    from .providers import ProviderError, auto_vision_model, chat_completions, image_part, text_part
 
     prefs = get_prefs()
     if not prefs:
         return None
     v_provider = str(getattr(prefs, "vision_provider", "") or "") or prefs.provider
     v_model = str(getattr(prefs, "vision_model", "") or "")
+    if not v_model:
+        v_model = auto_vision_model(v_provider)
     key_getter = getattr(prefs, "get_api_key", None)
     if not v_model or key_getter is None:
         return None
