@@ -314,8 +314,7 @@ def scenario_extension_tools(wm):
     listing = executor.dispatch("list_extensions", {"query": "blender"})
     # Environment-dependent: only asserts when this build was installed
     # as an extension; otherwise the check is skipped, not failed.
-    import sys
-    installed_as_ext = __package__.startswith("bl_ext.")
+    installed_as_ext = (__package__ or "").startswith("bl_ext.")
     check("list_extensions finds blender_ai",
           (not installed_as_ext)
           or (listing["ok"] and "bl_ext.user_default.blender_ai" in listing["result"]),
@@ -445,7 +444,11 @@ def main():
         get_api_key=lambda: "test-key",
         get_model=lambda: "glm-4.6",
     )
-    agent._prefs = lambda: fake_prefs
+    agent.get_prefs = lambda: fake_prefs
+    import blender_ai.executor as _executor
+    _executor.get_prefs = lambda: fake_prefs
+    import blender_ai.prefs as _prefs_mod
+    _prefs_mod.get_prefs = lambda: fake_prefs
 
     blender_ai.register()
     check("operators registered", hasattr(bpy.ops.blender_ai, "send"))
