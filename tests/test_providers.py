@@ -1,4 +1,5 @@
 """Provider client tests: request form (url/headers/body/tools) with a
+# mypy: ignore-errors
 monkeypatched requests.post, error mapping, and the verified endpoints."""
 
 import json as _json
@@ -32,10 +33,30 @@ class TestEndpoints(unittest.TestCase):
 
     def test_zai_endpoint_and_model(self):
         self.assertEqual(
-            providers.PROVIDERS["zai"]["base_url"],
-            "https://api.z.ai/api/paas/v4",
+            providers.PROVIDERS["zaicoding"]["base_url"],
+            "https://api.z.ai/api/coding/paas/v4",
         )
-        self.assertEqual(providers.PROVIDERS["zai"]["default_model"], "glm-4.6")
+        self.assertEqual(providers.PROVIDERS["zaicoding"]["default_model"], "glm-4.6")
+
+    def test_zai_coding_plan_endpoint(self):
+        # GLM Coding Plan keys only authenticate on the /coding/ endpoints
+        self.assertEqual(
+            providers.PROVIDERS["zaicoding"]["base_url"],
+            "https://api.z.ai/api/coding/paas/v4",
+        )
+        self.assertEqual(
+            providers.PROVIDERS["zaicoding"]["default_model"], "glm-4.6"
+        )
+        self.assertFalse(providers.model_belongs("zaicoding", "deepseek-v4"))
+        self.assertTrue(providers.model_belongs("zaicoding", "glm-4.6"))
+
+    def test_provider_order_covers_all_providers(self):
+        # regression: every PROVIDERS key must appear in the dropdown order
+        # (bigmodel once shipped missing from it)
+        self.assertEqual(
+            set(providers.PROVIDER_ORDER), set(providers.PROVIDERS)
+        )
+        self.assertEqual(len(providers.PROVIDER_ORDER), len(providers.PROVIDERS))
 
     def test_deepseek_endpoint_and_model(self):
         self.assertEqual(
@@ -61,12 +82,12 @@ class TestChatCompletions(unittest.TestCase):
         tools = [{"type": "function", "function": {"name": "t", "description": "",
                                                    "parameters": {}}}]
         result = providers.chat_completions(
-            "zai", "key-123", "glm-4.6",
+            "zaicoding", "key-123", "glm-4.6",
             [{"role": "user", "content": "hello"}],
             tools=tools, temperature=0.2, timeout=30,
         )
         self.assertEqual(_CAPTURED["url"],
-                         "https://api.z.ai/api/paas/v4/chat/completions")
+                         "https://api.z.ai/api/coding/paas/v4/chat/completions")
         self.assertEqual(_CAPTURED["headers"]["Authorization"], "Bearer key-123")
         self.assertEqual(_CAPTURED["json"]["model"], "glm-4.6")
         self.assertEqual(_CAPTURED["json"]["temperature"], 0.2)
@@ -89,7 +110,7 @@ class TestChatCompletions(unittest.TestCase):
                 "function": {"name": "scene_info", "arguments": {"depth": 1}},
             }],
         }}]})
-        message = providers.chat_completions("zai", "k", "glm-4.6", [])["message"]
+        message = providers.chat_completions("zaicoding", "k", "glm-4.6", [])["message"]
         self.assertEqual(message["content"], "he")
         self.assertEqual(message["tool_calls"][0]["function"]["arguments"],
                          '{"depth": 1}')
@@ -97,7 +118,7 @@ class TestChatCompletions(unittest.TestCase):
         _install_post(body={"choices": [{"message": {
             "role": "assistant", "content": None,
         }}]})
-        message = providers.chat_completions("zai", "k", "glm-4.6", [])["message"]
+        message = providers.chat_completions("zaicoding", "k", "glm-4.6", [])["message"]
         self.assertEqual(message["content"], "")
         self.assertNotIn("tool_calls", message)
 
@@ -112,7 +133,7 @@ class TestChatCompletions(unittest.TestCase):
     def test_missing_key_raises_before_http(self):
         _install_post()
         with self.assertRaises(providers.ProviderError):
-            providers.chat_completions("zai", "", "glm-4.6", [])
+            providers.chat_completions("zaicoding", "", "glm-4.6", [])
         self.assertNotIn("url", _CAPTURED)  # no HTTP call attempted
 
     def test_unknown_provider(self):
@@ -122,13 +143,13 @@ class TestChatCompletions(unittest.TestCase):
     def test_http_error_becomes_provider_error(self):
         _install_post(status_code=401, body={"error": "bad key"})
         with self.assertRaises(providers.ProviderError) as ctx:
-            providers.chat_completions("zai", "k", "glm-4.6", [])
+            providers.chat_completions("zaicoding", "k", "glm-4.6", [])
         self.assertIn("401", str(ctx.exception))
 
     def test_bad_shape_becomes_provider_error(self):
         _install_post(body={"unexpected": True})
         with self.assertRaises(providers.ProviderError):
-            providers.chat_completions("zai", "k", "glm-4.6", [])
+            providers.chat_completions("zaicoding", "k", "glm-4.6", [])
 
 
 class TestListModels(unittest.TestCase):
@@ -155,6 +176,25 @@ class TestListModels(unittest.TestCase):
         self.assertEqual(_CAPTURED["headers"]["Authorization"], "Bearer key-1")
         self.assertEqual(ids, ["model-a", "model-b"])  # sorted, no-id skipped
 
+    def test_zai_filters_foreign_models(self):
+        # z.ai lists a deepseek-flash proxy; only glm* ids are kept
+        self._install_get(body={"data": [{"id": "deepseek-flash"},
+                                         {"id": "glm-4.5v"},
+                                         {"id": "glm-4.6"}]})
+        ids = providers.list_models("zaicoding", "key-1")
+        self.assertEqual(ids, ["glm-4.5v", "glm-4.6"])
+
+    def test_zai_keeps_raw_list_when_family_missing(self):
+        # provider renamed its families: fall back to the unfiltered list
+        self._install_get(body={"data": [{"id": "brand-new-model"}]})
+        ids = providers.list_models("zaicoding", "key-1")
+        self.assertEqual(ids, ["brand-new-model"])
+
+    def test_model_belongs(self):
+        self.assertTrue(providers.model_belongs("zaicoding", "glm-4.6"))
+        self.assertFalse(providers.model_belongs("zaicoding", "deepseek-flash"))
+        self.assertTrue(providers.model_belongs("openrouter", "anything/at-all"))
+
     def test_openrouter_keyless(self):
         self._install_get(body={"data": [{"id": "openai/gpt-4o-mini"}]})
         ids = providers.list_models("openrouter", "")
@@ -165,7 +205,7 @@ class TestListModels(unittest.TestCase):
     def test_missing_key_non_openrouter(self):
         self._install_get()
         with self.assertRaises(providers.ProviderError):
-            providers.list_models("zai", "")
+            providers.list_models("zaicoding", "")
         self.assertNotIn("url", _CAPTURED)
 
     def test_http_error(self):
@@ -186,7 +226,7 @@ class TestListModels(unittest.TestCase):
         self.assertEqual(_CAPTURED["json"]["thinking"], {"type": "enabled"})
         providers.chat_completions("deepseek", "k", "m", [])
         self.assertNotIn("thinking", _CAPTURED["json"])
-        providers.chat_completions("zai", "k", "m", [], thinking=False)
+        providers.chat_completions("zaicoding", "k", "m", [], thinking=False)
         self.assertEqual(_CAPTURED["json"]["thinking"], {"type": "disabled"})
         providers.chat_completions("openrouter", "k", "m", [], thinking=True)
         self.assertNotIn("thinking", _CAPTURED["json"])
@@ -204,8 +244,8 @@ class TestListModels(unittest.TestCase):
             ("openrouter", "xhigh", {"reasoning_effort": "xhigh"}),
             ("openrouter", "max", {"reasoning_effort": "xhigh"}),  # capped
             ("openrouter", "off", {"reasoning_effort": "none"}),
-            ("zai", "low", {"thinking": {"type": "enabled"}}),  # no levels
-            ("zai", "off", {"thinking": {"type": "disabled"}}),
+            ("zaicoding", "low", {"thinking": {"type": "enabled"}}),  # no levels
+            ("zaicoding", "off", {"thinking": {"type": "disabled"}}),
         ]
         for provider, effort, expected in cases:
             providers.chat_completions(provider, "k", "m", [],
@@ -307,6 +347,61 @@ class TestListModels(unittest.TestCase):
         self.assertEqual(result["message"]["content"], "partial answer")
 
 
+"""Tests for providers.auto_vision_model zero-config captioner pick."""
+# mypy: ignore-errors
+
+import _common
+
+providers = _common.load_module("providers")
+
+
+class AutoVisionModelTests(unittest.TestCase):
+    def test_unknown_provider_returns_none(self):
+        self.assertIsNone(providers.auto_vision_model("nope"))
+
+    def tearDown(self):
+        providers._NO_VISION.clear()
+
+    def test_deepseek_flash_sees_images(self):
+        # api-docs.deepseek.com: deepseek-flash Vision ✓, deepseek-v4-pro not
+        self.assertTrue(providers.supports_vision("deepseek", "deepseek-flash"))
+        self.assertFalse(providers.supports_vision("deepseek", "deepseek-v4-pro"))
+
+    def test_deepseek_pro_gets_flash_as_captioner(self):
+        self.assertEqual(providers.auto_vision_model("deepseek"), "deepseek-flash")
+
+    def test_zai_doc_models(self):
+        self.assertEqual(providers.auto_vision_model("zaicoding"), "glm-4.6v")
+
+    def test_rejected_model_is_never_sent_images_again(self):
+        providers.mark_no_vision("deepseek", "deepseek-flash")
+        self.assertFalse(providers.supports_vision("deepseek", "deepseek-flash"))
+        self.assertIsNone(providers.auto_vision_model("deepseek"))
+
+    def test_state_round_trip(self):
+        providers.mark_no_vision("zaicoding", "glm-4.5v")
+        state = providers.vision_state()
+        providers._NO_VISION.clear()
+        providers.load_vision_state(state)
+        self.assertFalse(providers.supports_vision("zaicoding", "glm-4.5v"))
+        providers.load_vision_state({"no": "garbage", "yes": None})  # ignored
+
+    def test_cached_vision_metadata_wins(self):
+        providers.remember_vision_models(
+            "openrouter",
+            [{"id": "deepseek/deepseek-chat"},
+             {"id": "qwen/qwen2.5-vl-72b",
+              "architecture": {"input_modalities": ["text", "image"]}},
+             {"id": "mistral/pixtral-large",
+              "architecture": {"input_modalities": ["text", "image"]}}],
+        )
+        try:
+            self.assertEqual(providers.auto_vision_model("openrouter"),
+                             "mistral/pixtral-large")
+        finally:
+            providers._VISION_MODELS.pop("openrouter", None)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -330,6 +425,7 @@ class TestResilience(unittest.TestCase):
         class Busy:
             status_code = 503
             text = "unavailable"
+            headers = {}
 
             def close(self):
                 calls.append("closed")
@@ -367,6 +463,7 @@ class TestResilience(unittest.TestCase):
         class Busy:
             status_code = 429
             text = "rate limited"
+            headers = {}
 
             def close(self):
                 pass
@@ -380,6 +477,61 @@ class TestResilience(unittest.TestCase):
         with self.assertRaises(providers.ProviderError):
             providers.chat_completions("deepseek", "k", "m", [], retries=1)
         self.assertEqual(len(calls), 2)  # initial + 1 retry
+
+    def test_retries_honor_retry_after(self):
+        sleeps = self._silent_sleep()
+        requests = providers.requests
+        _CAPTURED.clear()
+        calls = []
+
+        class Busy:
+            status_code = 429
+            text = ""
+            headers = {"Retry-After": "7"}
+
+            def close(self):
+                calls.append("closed")
+
+        ok = type("OK", (), {})()
+        ok.status_code = 200
+        ok.text = ""
+        ok._body = {"choices": [{"message": {"role": "assistant",
+                                             "content": "hi"}}],
+                    "usage": {}}
+        ok.json = lambda: ok._body
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            calls.append("post")
+            return Busy() if len(calls) == 1 else ok
+
+        requests.post = fake_post
+        result = providers.chat_completions("zaicoding", "k", "glm-4.6", [],
+                                            retries=1)
+        self.assertEqual(result["message"]["content"], "hi")
+        self.assertEqual(sleeps, [7.0])  # Retry-After beats linear backoff
+
+    def test_rate_limit_empty_body_gets_hint(self):
+        self._silent_sleep()
+        requests = providers.requests
+        _CAPTURED.clear()
+
+        class Busy:
+            status_code = 429
+            text = ""
+            headers = {}
+
+            def close(self):
+                pass
+
+        def fake_post(url, headers=None, json=None, timeout=None,
+                      stream=False):
+            return Busy()
+
+        requests.post = fake_post
+        with self.assertRaises(providers.ProviderError) as ctx:
+            providers.chat_completions("zaicoding", "k", "glm-4.6", [], retries=0)
+        self.assertIn("rate limited", str(ctx.exception))
 
     def test_stop_event_cancels_stream(self):
         import threading

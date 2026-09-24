@@ -1,5 +1,7 @@
 """History logic tests: message shape, trim with tool-pair safety, JSON."""
+# mypy: ignore-errors
 
+import json
 import os
 import tempfile
 import unittest
@@ -193,3 +195,58 @@ class TestOutgoingSnapshot(unittest.TestCase):
         self.assertIsNot(out[0], msgs[0])
         self.assertIn("reasoning", msgs[0])  # original untouched
         self.assertNotIn("reasoning", out[0])
+
+
+class TestTaskPinAndCompact(unittest.TestCase):
+    def _build_call(self, call_id, model, code):
+        return {"id": call_id, "type": "function",
+                "function": {"name": "build_model",
+                             "arguments": json.dumps({"name": model, "code": code})}}
+
+    def test_task_survives_trim(self):
+        msgs = [history.message("user", content="build a silo bunker")]
+        for i in range(30):
+            msgs.append(history.message("assistant", content="step %d" % i))
+        out = history.trim(msgs, 10)
+        self.assertEqual(out[0]["content"], "build a silo bunker")
+        self.assertEqual(len(out), 11)
+
+    def test_nudges_are_not_the_task(self):
+        msgs = [history.message("user", content="build a tank"),
+                history.message("assistant", content="plan")]
+        msgs += [history.message("assistant", content="x") for _ in range(10)]
+        msgs.append(history.message("user", content="(harness) continue", auto=True))
+        out = history.trim(msgs, 3)
+        self.assertEqual(out[0]["content"], "build a tank")
+
+    def test_auto_flag_is_not_sent(self):
+        out = history.outgoing_snapshot(
+            [history.message("user", content="go on", auto=True)])
+        self.assertNotIn("auto", out[0])
+
+    def test_only_newest_script_per_model_is_kept(self):
+        msgs = [
+            history.message("assistant", tool_calls=[self._build_call("a", "Bunker", "v1")]),
+            history.message("tool", content="ok", tool_call_id="a"),
+            history.message("assistant", tool_calls=[self._build_call("b", "Tower", "t1")]),
+            history.message("tool", content="ok", tool_call_id="b"),
+            history.message("assistant", tool_calls=[self._build_call("c", "Bunker", "v2")]),
+            history.message("tool", content="ok", tool_call_id="c"),
+        ]
+        out = history.compact(msgs)
+
+        def code(i):
+            return json.loads(out[i]["tool_calls"][0]["function"]["arguments"])["code"]
+
+        self.assertIn("omitted", code(0))
+        self.assertEqual(code(2), "t1")
+        self.assertEqual(code(4), "v2")
+        # input untouched
+        self.assertIn('"v1"', msgs[0]["tool_calls"][0]["function"]["arguments"])
+
+    def test_old_tool_results_are_truncated(self):
+        msgs = [history.message("tool", content="R" * 5000, tool_call_id=str(i))
+                for i in range(12)]
+        out = history.compact(msgs)
+        self.assertLess(len(out[0]["content"]), 700)
+        self.assertEqual(len(out[-1]["content"]), 5000)

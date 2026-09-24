@@ -1,8 +1,22 @@
 """UI package: WindowManager properties shared by the panel and operators."""
+# mypy: ignore-errors
 
 import bpy
 
-from . import panel
+from . import (
+    operators,
+    panel,
+)
+
+
+class AI_Attachment(bpy.types.PropertyGroup):
+    """One staged image attachment (path points at the downscaled PNG)."""
+
+    path: bpy.props.StringProperty()
+    label: bpy.props.StringProperty()
+    width: bpy.props.IntProperty()
+    height: bpy.props.IntProperty()
+    sha256: bpy.props.StringProperty()
 
 
 class AI_Message(bpy.types.PropertyGroup):
@@ -37,12 +51,14 @@ _WM_PROPS = (
     "blender_ai_show_all_tools",
     "blender_ai_live",
     "blender_ai_show_live",
+    "blender_ai_attachments",
 )
 
 
-def register():
+def register() -> None:
     panel.register()
     bpy.utils.register_class(AI_Message)
+    bpy.utils.register_class(AI_Attachment)
     wm = bpy.types.WindowManager
     wm.blender_ai_messages = bpy.props.CollectionProperty(type=AI_Message)
     wm.blender_ai_input = bpy.props.StringProperty(
@@ -66,12 +82,14 @@ def register():
         name="Show reasoning tail",
         default=False,
     )
+    wm.blender_ai_attachments = bpy.props.CollectionProperty(type=AI_Attachment)
 
 
-def unregister():
+def unregister() -> None:
     wm = bpy.types.WindowManager
     for name in _WM_PROPS:
         if hasattr(wm, name):
             delattr(wm, name)
+    bpy.utils.unregister_class(AI_Attachment)
     bpy.utils.unregister_class(AI_Message)
     panel.unregister()

@@ -1,0 +1,72 @@
+# Dev-only tooling config (ruff + mypy). Excluded from the shipped extension
+# via `paths_exclude_pattern` in blender_manifest.toml — never bundled.
+# Run: ruff check .   /   mypy --strict .
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = ["_work", "tests/_work", ".rlm"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "BLE",  # blind except
+    "ANN",  # annotations
+    "RUF",  # ruff-specific
+    "PL",   # pylint
+]
+ignore = [
+    "ANN401",  # Any is unavoidable at the run_python sandbox boundary
+    "PLC0415", # lazy imports are the architecture: bpy-heavy modules load
+               # inside functions (main thread) to keep registration light
+               # and avoid import cycles
+    "PLR0913", # tool funcs take many keyword args by design (schema mirrors them)
+    "PLR0917", # same: many positional parameters in tool/UI functions
+    "PLR2004", # magic values in numeric validation checks are the point
+    "PLW0603", # one sanctioned global: the Session instance (Blender add-on)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy modules predating the strict pass: formatting-era idioms (%
+# string formatting, contextlib.suppress, legacy complexity) are migrated
+# opportunistically; logic-level rules stay enforced.
+"agent.py" = ["ANN", "UP031", "SIM105", "PLR0912", "PLR0915", "E501"]
+"providers.py" = ["ANN", "UP031"]
+"history.py" = ["ANN", "UP031", "E501"]
+"prefs.py" = ["ANN", "E501", "UP031"]
+"__init__.py" = ["E402"]  # bl_info must precede imports (add-on pattern)
+"tools/__init__.py" = ["E402", "F401"]  # imports ARE the tool registration
+"ui/__init__.py" = ["F401"]  # re-export for panel
+"ui/operators.py" = ["ANN", "E501", "PLR0912", "PLR0915", "UP031"]
+"ui/panel.py" = ["ANN", "E501", "PLR0912", "PLR0915", "UP031"]
+"attachments.py" = ["E501", "UP031"]
+"tests/*" = ["ANN", "PL", "SIM", "E501", "UP031", "E402", "BLE001"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+warn_unreachable = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["bpy", "bmesh", "mathutils", "bpy.*", "requests", "numpy"]
+ignore_missing_imports = true
+
+# Legacy modules predate the strict pass. They are followed silently
+# (their unannotated defs count as Any) but not re-checked here; new
+# code (modelkit, report, tools, executor, debuglog, prompts) is held
+# to --strict.
+[[tool.mypy.overrides]]
+module = [
+    "blender_ai",
+    "agent", "providers", "history", "prefs",
+    "ui", "ui.panel", "ui.operators",
+]
+ignore_errors = true
+follow_imports = "silent"

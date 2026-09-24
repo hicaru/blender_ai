@@ -1,45 +1,57 @@
 # Blender AI
 
-An AI chat agent that builds 3D models *inside* Blender. You describe what you
-want in plain language; the agent reasons, calls Blender tools (create objects,
-apply modifiers, assign materials, edit UVs, sculpt, manage addons), runs the
-generated Python in your scene, and iterates until the result is right.
+An AI agent inside Blender with one job: **build 3D models for games made with
+[Bevy](https://bevyengine.org)**. Describe the model in plain language ("a
+silo bunker with an underground shaft and a blast door"). The agent plans the
+parts, writes **one Python build script** with the `mk` modeling kit, runs it,
+reads the build report, and improves the script until the model matches.
+It can then export a Bevy-ready `.glb`.
 
-Implemented as a native Blender extension (Blender 4.2+ extension manifest,
-tested against 5.2).
+## Why build scripts
+
+LLMs place parts coherently when **one script holds every coordinate**. Each
+part is positioned from shared variables, and every rebuild re-runs the whole
+script from an empty collection, so iterations are deterministic. Building
+with many small tool calls lost that frame of reference and produced parts
+scattered in a row instead of one building.
 
 ## Features
 
-- **Chat panel in the 3D View sidebar** (N-panel, "AI" tab): streaming answers,
-  collapsible message history, tool-call log previews.
-- **Real tool use, not code dumps** — the model calls registered tools
-  (`scene`, `materials`, `modifiers`, `uv`, `sculpt`, `addons`, `interactive`);
-  each tool runs on Blender's main thread with undo support.
-- **Code gate** — free-form Python suggested by the model is parked behind an
-  Approve / Reject dialog unless auto-approval is enabled in preferences.
-- **Repair loop** — when a round ends in an error, the agent automatically
-  retries with a bounded iteration budget (default 3). Each attempt is recorded
-  to `state.md` / `record.md` files; a live status + record preview is shown in
-  the panel. A user Stop always pauses the loop.
-- **Durable skill state** — failures and successful fixes are distilled into
-  merged, weight-ranked notes (JSON on disk, capped at 50) that are injected
-  into future requests, so the agent learns across sessions.
-- **Reasoning-effort aware budgets** — the output token cap scales with the
-  selected reasoning effort; if a thinking model exhausts the budget, the
-  request is retried with lower effort, and truncated answers are
-  auto-continued (bounded).
-- **Multiple providers** — Z.ai, DeepSeek and OpenRouter (OpenAI-compatible
-  chat completions, streamed), with model list fetching and per-provider API
-  keys.
-- **Conversation history** is stored in the `.blend` file, so chats survive
-  save/reload; history is trimmed to a preference cap before each request.
+- **`mk` modeling kit**: `box`, `cylinder`, `cone`, `tube` (hollow), `sphere`
+  (`hemi` domes), `torus`, `profile` (extruded outlines: arches, frames, floor
+  plans), `stairs`, booleans (`cut`, `union`, baked immediately), `bevel`,
+  `smooth`, `join`, linked `copy` / `repeat` / `radial` (one mesh, many
+  instances in Bevy), `mirror`, `group` (parent entity, e.g. a door to
+  animate). Every part gets a material from a PBR palette (`concrete`,
+  `steel`, `rust`, `hazard_yellow`, emissive `light_*`, …).
+- **Build report after every run**: parts, triangle counts, sizes, and
+  issues. The key issue is **disconnected groups**: parts that float apart
+  from the main body.
+- **Bevy export**: `export_glb` writes glTF 2.0 (Y-up, meters, Principled →
+  `StandardMaterial`, emission → emissive, names → `Name`, groups → child
+  entities).
+- **Reliable loop**: when the model stops mid-build with text instead of a tool
+  call, it gets a bounded "continue" nudge. `finish` ends the task, and is
+  refused when a call in the same batch failed. Dropped connections are
+  retried. The user's task message is never trimmed from the history, and
+  older scripts are compacted.
+- **Chat-only panel**: approvals and questions show at the **top** of the
+  panel, so a waiting agent never looks stopped.
+- **Images, zero setup**: attach from a file, the clipboard, or by
+  drag-and-drop. Models with image input (for example `deepseek-flash`,
+  `glm-4.6v`) see images directly, including their own renders from
+  `capture_view`. A text-only model gets a caption from a vision model picked
+  automatically: the same provider first, then any other provider you have a
+  key for. If a provider rejects images, the add-on remembers that model and
+  switches to captions for it. Model lists are fetched automatically at
+  startup and whenever you enter a key.
 
 ## Requirements
 
 - Blender **5.2.0+** (extension manifest format).
 - An API key for at least one provider (Z.ai, DeepSeek or OpenRouter).
-- Network access — the add-on requests the `network` permission and sends chat
-  requests only to the provider you configure.
+- Network access: the add-on sends chat requests only to the provider you
+  configure. File access is for attached images and exported `.glb` files.
 
 ## Install
 
@@ -73,58 +85,52 @@ blender --command extension install-file -r user_default -e _work/blender_ai-<ve
 
 1. Open the **AI** tab in the 3D View sidebar (N).
 2. In **Add-on Preferences** (Preferences → Get Extensions → Blender AI):
-   - pick a **Provider** (`zai`, `deepseek`, `openrouter`) and paste its **API key**;
-   - **Fetch models** or type a model id; adjust temperature if needed.
-3. Optional:
-   - **Auto-approve code** — run generated Python without the confirm dialog
-     (off by default, recommended off for untrusted workflows).
-   - **Reasoning effort** — `off`/`low`/`medium`/`high`; higher values make the
-     model think more and get a larger output budget.
-   - **Repair loop bound** — max automatic retries after an errored round.
-   - **Skill store** — directory for durable notes and loop files; empty uses
-     `~/BlenderAI/skills`.
+   - pick a **Provider** (`zaicoding` — Z.ai GLM Coding Plan, `deepseek`,
+     `openrouter`) and paste its **API key**;
+   - the model list loads by itself; pick a model or leave it empty for the
+     provider default (`deepseek-flash` for DeepSeek).
+   - **Auto-approve generated code**: build scripts run without a confirmation
+     click. Without it, every build waits for **Approve** at the top of the
+     panel.
+   - **Export directory**: where `<model>.glb` lands. Empty uses an `exports`
+     folder next to the .blend.
 
 ## Usage
 
-- Type a task ("make a low-poly lighthouse with a glowing lamp") and press
-  **Send**.
-- The agent thinks, calls tools and reports progress in the chat. Tool calls
-  are visible as log entries; generated code requires **Approve** unless
-  auto-approval is on.
-- **Stop** cancels the current round and pauses any active repair loop.
-- **New chat** starts a fresh conversation (history is kept in the scene until
-  then).
-- The **Repair loop** section shows live loop state (`state.md`) and the latest
-  record entries (`record.md`) from the skill store.
+Type what to build and press **Send**. The agent answers with a short plan,
+builds, checks the report, rebuilds with fixes, and calls `finish` with a
+summary. Ask for changes in plain language, or say "export for Bevy".
 
-## How it works
+In Bevy:
 
-1. Your message + trimmed history + a bounded durable-knowledge block go to the
-   provider as an OpenAI-compatible chat request with tool schemas.
-2. Streamed assistant tool calls are dispatched one by one in Blender's main
-   thread; results are appended to the conversation and the loop repeats until
-   the model produces a final answer.
-3. Errors trigger the bounded repair loop (attempt → record → gate → retry);
-   `finish_reason=length` answers are continued automatically, also bounded.
-4. Resolved failures are stored as merged notes in the skill store and injected
-   (bounded, deduplicated) into future requests.
+```rust
+commands.spawn(SceneRoot(asset_server.load(
+    GltfAssetLabel::Scene(0).from_asset("models/Bunker.glb"))));
+```
+
+## Debugging
+
+Every event goes to one log file: `<tempdir>/blender_ai_debug.log` (macOS:
+`/var/folders/.../T/blender_ai_debug.log`; set `BLENDER_AI_LOG` to change
+it). Each line has the time, the event, and JSON details. The events are:
+`send` (task text), `spawn` (request size, tools, effort), `worker done`
+(content/reasoning length, tool names, finish reason, usage), `tool` (args
+preview, result head), `park for user` / `resolved`, `nudge`,
+`transient error: retry`, `finish`, `turn end`, `error surfaced`. When the
+agent seems stuck, the last line tells you what it is waiting for.
 
 ## Development
 
-Run the pure-Python test suite (no Blender needed):
-
 ```sh
-python3 -m unittest discover -s tests
-```
-
-Run the headless smoke test (exercises the agent loop inside Blender with a
-sandboxed store):
-
-```sh
+python3 -m unittest discover -s tests        # pure-python unit tests
 blender --background --factory-startup --python tests/blender_smoke.py
+ruff check .
+mypy --strict --config-file pyproject.toml -p blender_ai.modelkit -p blender_ai.report \
+    -p blender_ai.tools -p blender_ai.executor   # run from the parent dir
 ```
 
-Rebuild after changes (see Option B above) and reinstall the fresh zip.
+The smoke test drives the real agent loop against a mock provider and builds
+a real silo bunker with the kit, then exports and re-imports the GLB.
 
 ## License
 

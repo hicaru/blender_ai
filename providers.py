@@ -1,4 +1,5 @@
 """OpenAI-compatible HTTP client for LLM providers.
+# mypy: ignore-errors
 
 The single place in the addon that knows provider URLs and model ids.
 Verified against official docs (2026-02):
@@ -22,20 +23,38 @@ import time
 
 import requests
 
-__all__ = ("PROVIDERS", "ProviderError", "ProviderCancelled",
-           "chat_completions", "list_models")
+__all__ = (
+    "PROVIDERS",
+    "PROVIDER_ORDER",
+    "ProviderCancelled",
+    "ProviderError",
+    "auto_vision_model",
+    "chat_completions",
+    "image_part",
+    "list_models",
+    "load_vision_state",
+    "mark_no_vision",
+    "model_belongs",
+    "supports_vision",
+    "text_part",
+    "vision_state",
+)
 
 
 PROVIDERS = {
-    "zai": {
-        "label": "Z.ai (GLM)",
-        "base_url": "https://api.z.ai/api/paas/v4",
+    "zaicoding": {
+        # GLM Coding Plan keys only pass auth on the /coding/ endpoints
+        # (verified live); the plain /api/paas/v4 API rejects them with 401.
+        "label": "Z.ai (GLM Coding Plan)",
+        "base_url": "https://api.z.ai/api/coding/paas/v4",
         "default_model": "glm-4.6",
+        "vision_model": "glm-4.5v",  # auto captioner when the main model is text-only
     },
     "deepseek": {
         "label": "DeepSeek",
         "base_url": "https://api.deepseek.com",
         "default_model": "deepseek-flash",
+        "vision_model": "deepseek-flash",  # api-docs.deepseek.com/guides/vision
     },
     "openrouter": {
         "label": "OpenRouter",
@@ -43,6 +62,9 @@ PROVIDERS = {
         "default_model": "",
     },
 }
+
+# Dropdown order (prefs reads this); must cover exactly PROVIDERS' keys.
+PROVIDER_ORDER = ("zaicoding", "deepseek", "openrouter")
 
 
 class ProviderError(RuntimeError):
@@ -53,14 +75,144 @@ class ProviderCancelled(ProviderError):
     """Raised when the user stops the run while the stream is in flight."""
 
 
+# ------------------------------------------------------------- vision
+
+# Vision capability, most reliable source first:
+# 1. _NO_VISION  — learned at runtime: the provider rejected an image;
+# 2. _VISION_MODELS — /models metadata (OpenRouter input_modalities) and
+#    ids confirmed by provider docs (_DOC_VISION, verified 2026-09);
+# 3. an id heuristic for unknown models.
+# 1 and 2 are persisted by prefs (models_cache JSON) across restarts.
+_DOC_VISION = {
+    "deepseek": frozenset({"deepseek-flash"}),   # deepseek-v4-pro: no vision
+    "zaicoding": frozenset({"glm-4.5v", "glm-4.6v"}),
+}
+
+# /models lists may contain foreign entries (z.ai, for example, lists a
+# ``deepseek-flash`` proxy). Only these id prefixes count as the provider's
+# own model family; providers without an entry are kept verbatim.
+_MODEL_FILTERS = {"zaicoding": "glm"}
+_VISION_ID_HINTS = frozenset({
+    "glm-4.5v", "glm-4.6v", "glm-4v", "gpt-4o", "gpt-4.1", "gpt-5",
+    "claude", "gemini", "llama-3.2-90b-vision", "qwen-vl", "pixtral",
+    "vlm", "vision",
+})
+_VISION_MODELS = {}  # provider_id -> frozenset(ids with image input)
+_NO_VISION = {}      # provider_id -> frozenset(ids that rejected images)
+
+
+def text_part(text):
+    """OpenAI-compatible text content part."""
+    return {"type": "text", "text": text}
+
+
+def image_part(data_url):
+    """OpenAI-compatible image content part (base64 data URL)."""
+    return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def _vision_from_id(model):
+    low = model.lower()
+    return any(hint in low for hint in _VISION_ID_HINTS)
+
+
+def model_belongs(provider_id, model):
+    """True if ``model`` is in the provider's own model family.
+
+    Providers without a family filter (OpenRouter) accept any id.
+    """
+    prefix = _MODEL_FILTERS.get(provider_id, "")
+    return not prefix or str(model).lower().startswith(prefix)
+
+
+def remember_vision_models(provider_id, model_rows):
+    """Cache vision capability from /models rows (OpenRouter: architecture)."""
+    ids = set()
+    for row in model_rows:
+        if not isinstance(row, dict):
+            continue
+        mid = row.get("id")
+        if not mid:
+            continue
+        arch = row.get("architecture") or {}
+        modalities = arch.get("input_modalities") or []
+        if "image" in modalities:
+            ids.add(str(mid))
+    if ids:
+        _VISION_MODELS[provider_id] = frozenset(ids)
+
+
+def mark_no_vision(provider_id, model):
+    """The provider rejected an image for this model: never send it one again."""
+    _NO_VISION[provider_id] = _NO_VISION.get(provider_id, frozenset()) | {model}
+
+
+def vision_state():
+    """JSON-safe snapshot of learned capabilities (persisted by prefs)."""
+    return {"yes": {p: sorted(ids) for p, ids in _VISION_MODELS.items()},
+            "no": {p: sorted(ids) for p, ids in _NO_VISION.items()}}
+
+
+def load_vision_state(state):
+    """Restore :func:`vision_state` output (bad shapes are ignored)."""
+    if not isinstance(state, dict):
+        return
+    for key, target in (("yes", _VISION_MODELS), ("no", _NO_VISION)):
+        rows = state.get(key)
+        if not isinstance(rows, dict):
+            continue
+        for provider_id, ids in rows.items():
+            if isinstance(ids, list):
+                target[str(provider_id)] = frozenset(str(i) for i in ids)
+
+
+def supports_vision(provider_id, model):
+    """Whether this provider+model accepts image content parts."""
+    if model in _NO_VISION.get(provider_id, ()):
+        return False
+    if model in _VISION_MODELS.get(provider_id, ()):
+        return True
+    if model in _DOC_VISION.get(provider_id, ()):
+        return True
+    return _vision_from_id(model)
+
+
+_VISION_PICK_HINTS = ("glm-4.6v", "glm-4.5v", "4v", "pixtral", "vl",
+                      "vision", "vlm")
+
+
+def auto_vision_model(provider_id):
+    """Zero-config captioner for a provider.
+
+    Prefers a model already known to accept images (from the ``/models``
+    metadata cached by :func:`remember_vision_models`), then a static
+    ``vision_model`` from PROVIDERS. Returns ``None`` when the provider
+    serves no known vision model. Models that rejected images are skipped.
+    """
+    bad = _NO_VISION.get(provider_id, frozenset())
+    ids = (_VISION_MODELS.get(provider_id, frozenset())
+           | _DOC_VISION.get(provider_id, frozenset())) - bad
+
+    def _rank(mid):
+        low = mid.lower()
+        hint = next((i for i, h in enumerate(_VISION_PICK_HINTS) if h in low),
+                    len(_VISION_PICK_HINTS))
+        return (hint, mid)
+
+    if ids:
+        return min(ids, key=_rank)
+    model = (PROVIDERS.get(provider_id) or {}).get("vision_model")
+    return None if model in bad else model
+
+
 def _close_response(resp):
     """Best-effort close (fakes in tests may lack .close)."""
     close = getattr(resp, "close", None)
     if close is not None:
-        try:
+        import contextlib
+
+        with contextlib.suppress(Exception):  # close is best-effort
             close()
-        except Exception:  # noqa: BLE001 — cleanup must never mask the real error
-            pass
 
 
 def list_models(provider_id, api_key, timeout=20):
@@ -83,26 +235,35 @@ def list_models(provider_id, api_key, timeout=20):
     try:
         response = requests.get(url, headers=headers, timeout=timeout)
     except requests.RequestException as exc:
-        raise ProviderError("Network error talking to %s: %s" % (provider["label"], exc))
+        raise ProviderError("Network error talking to %s: %s" % (provider["label"], exc)) from exc
 
     if response.status_code != 200:
+        detail = response.text[:300].strip()
+        if response.status_code == 429 and not detail:
+            detail = "rate limited - retry shortly"
         raise ProviderError(
             "%s returned HTTP %d: %s"
-            % (provider["label"], response.status_code, response.text[:300])
+            % (provider["label"], response.status_code, detail)
         )
 
     try:
         data = response.json()["data"]
-        ids = sorted(str(item["id"]) for item in data if item.get("id"))
+        rows = [item for item in data if item.get("id")]
+        kept = [item for item in rows if model_belongs(provider_id, item["id"])]
+        rows = kept or rows  # family renamed upstream: keep the raw list
+        ids = sorted(str(item["id"]) for item in rows)
+        remember_vision_models(provider_id, rows)
     except (ValueError, KeyError, TypeError) as exc:
-        raise ProviderError("Unexpected model list shape from %s: %s" % (provider["label"], exc))
+        raise ProviderError(
+            "Unexpected model list shape from %s: %s" % (provider["label"], exc)
+        ) from exc
 
     if not ids:
         raise ProviderError("%s returned an empty model list." % provider["label"])
     return ids
 
 
-def _apply_reasoning(payload, provider_id, thinking, effort):
+def _apply_reasoning(payload, provider_id, thinking, effort):  # noqa: PLR0912 — provider-specific payloads
     """Populate thinking / reasoning_effort payload keys per provider.
 
     ``effort`` (when set) drives everything; empty ``effort`` falls back to
@@ -128,20 +289,20 @@ def _apply_reasoning(payload, provider_id, thinking, effort):
                     payload["reasoning_effort"] = effort
                 elif effort in ("xhigh", "max"):
                     payload["reasoning_effort"] = "high"  # documented cap
-        elif provider_id == "zai":
+        elif provider_id == "zaicoding":
             payload["thinking"] = {
                 "type": "disabled" if effort == "off" else "enabled"}
         return
 
     # legacy boolean path
-    if thinking and provider_id in ("zai", "deepseek"):
+    if thinking and provider_id in ("zaicoding", "deepseek"):
         payload["thinking"] = {"type": "enabled"}
-    elif not thinking and provider_id == "zai":
+    elif not thinking and provider_id == "zaicoding":
         # GLM reasons by default; switch it off explicitly to save tokens
         payload["thinking"] = {"type": "disabled"}
 
 
-def _consume_stream(response, on_delta, stop_event=None):
+def _consume_stream(response, on_delta, stop_event=None):  # noqa: PLR0912, PLR0915 — SSE accumulation
     """Read an OpenAI-style SSE chat stream and assemble the message.
 
     Recognizes ``reasoning_content`` (DeepSeek, Z.ai) and ``reasoning``
@@ -273,7 +434,7 @@ def _normalize_message(raw):
     return message
 
 
-def chat_completions(
+def chat_completions(  # noqa: PLR0912, PLR0915
     provider_id,
     api_key,
     model,
@@ -355,20 +516,28 @@ def chat_completions(
                 continue
             raise ProviderError(
                 "Network error talking to %s: %s" % (provider["label"], exc)
-            )
+            ) from exc
 
         if response.status_code in (429, 500, 502, 503, 504) and attempt < retries:
-            # transient: retry with linear backoff before giving up
+            # transient: back off before the next attempt; honor Retry-After
             attempt += 1
+            try:
+                delay = float(response.headers.get("Retry-After") or 0)
+            except (TypeError, ValueError):
+                delay = 0.0
             _close_response(response)
-            time.sleep(1.5 * attempt)
+            time.sleep(min(max(delay, 1.5 * attempt), 20.0))
             continue
 
         if response.status_code != 200:
             _close_response(response)
+            detail = response.text[:300].strip()
+            if response.status_code == 429 and not detail:
+                # z.ai throttles with an empty body; say so instead of a bare ":"
+                detail = "rate limited - too many requests, retry shortly"
             raise ProviderError(
                 "%s returned HTTP %d: %s"
-                % (provider["label"], response.status_code, response.text[:300])
+                % (provider["label"], response.status_code, detail)
             )
         break
 
@@ -383,7 +552,9 @@ def chat_completions(
     except ProviderError:
         raise
     except (ValueError, KeyError, IndexError, TypeError) as exc:
-        raise ProviderError("Unexpected response shape from %s: %s" % (provider["label"], exc))
+        raise ProviderError(
+            "Unexpected response shape from %s: %s" % (provider["label"], exc)
+        ) from exc
     finally:
         _close_response(response)
 

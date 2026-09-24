@@ -1,140 +1,67 @@
-"""Tool execution on the main thread: dispatch, undo push, run_python gate.
+"""Tool execution on the main thread: dispatch, undo push, approval gate.
 
-``dispatch`` is the only entry the agent loop uses. It runs on the main
-thread, pushes an undo step per tool call (guarded — ``undo_push`` needs a
-window manager and is skipped in ``--background``), and enforces the
-approval gate for ``run_python``: without ``auto_approve_code`` the code is
-NOT executed; it is parked in the panel and the agent loop stops until the
-user approves or rejects.
+``dispatch`` is the only entry the agent loop uses. It pushes an undo step
+per successful tool call (skipped in ``--background``) and enforces the
+approval gate: a tool registered with ``approval="code"`` (build_model
+runs model-written Python) is NOT executed without ``auto_approve_code``;
+it is parked in the panel until the user approves or rejects.
 """
 
-import contextlib
-import io
-import textwrap
+from __future__ import annotations
 
-import bmesh
+import contextlib
+from typing import Any
+
 import bpy
-import math
-import mathutils
 
 from .prefs import get_prefs
-from .tools import TOOL_REGISTRY, ToolError
-from .tools import tools_schema as _tools_schema  # re-export
+from .tools import TOOL_REGISTRY, ToolError, tools_schema
 
-__all__ = ("dispatch", "execute_python", "tools_schema")
+__all__ = ("dispatch", "execute_tool", "tools_schema")
 
-_MAX_OUTPUT = 4000
+Outcome = dict[str, Any]
 
 
-def dispatch(name, arguments, force=False):
+def dispatch(name: str, arguments: dict[str, Any], force: bool = False) -> Outcome:  # noqa: PLR0911 — gate outcomes
     """Execute one tool call. Returns one of:
 
     - ``{"ok": True,  "result": str}``
-    - ``{"ok": False, "result": str}`` — errors as ERROR strings
+    - ``{"ok": False, "result": "ERROR: ..."}``
     - ``{"pending": True, "kind": "code"|"ask"}`` — parked for the user
-
-    Gated tools (``approval="code"``) — ``run_python``, extension install /
-    uninstall — park until the user approves unless ``force=True`` (set by
-    :func:`execute_tool` after the user approved) or the auto-approve
-    preference is on.
     """
     tool = TOOL_REGISTRY.get(name)
     if tool is None:
-        return {"ok": False, "result": "ERROR: unknown tool %r" % name}
+        known = ", ".join(TOOL_REGISTRY)
+        return {"ok": False, "result": f"ERROR: unknown tool {name!r}; tools: {known}"}
 
-    prefs = get_prefs()
-    if tool["approval"] == "code" and not force and not (prefs and prefs.auto_approve_code):
+    prefs = get_prefs()  # type: ignore[no-untyped-call]
+    auto = bool(prefs is not None and prefs.auto_approve_code)
+    if tool["approval"] == "code" and not force and not auto:
         return {"pending": True, "kind": "code"}
 
     try:
         result = tool["func"](**arguments)
     except ToolError as exc:
-        return {"ok": False, "result": "ERROR: %s" % exc}
+        return {"ok": False, "result": f"ERROR: {exc}"}
     except TypeError as exc:
-        return {"ok": False, "result": "ERROR: bad arguments: %s" % exc}
-    except Exception as exc:  # noqa: BLE001 — tool results must stay strings
-        return {"ok": False, "result": "ERROR: %s: %s" % (type(exc).__name__, exc)}
+        return {"ok": False, "result": f"ERROR: bad arguments: {exc}"}
+    except (RuntimeError, ValueError, KeyError, OSError) as exc:
+        # bpy.ops raises RuntimeError for poll/context failures, ValueError
+        # for bad enum values. Anything else is a real bug and propagates
+        # to the poll boundary, which logs it.
+        return {"ok": False, "result": f"ERROR: {type(exc).__name__}: {exc}"}
 
     # Undo step AFTER the change succeeded: pushed before, Ctrl+Z would
     # first "eat" the agent's step instead of reverting its effect.
     if not bpy.app.background:
-        try:
-            bpy.ops.ed.undo_push(message="AI: %s" % name)
-        except RuntimeError:
-            pass
+        with contextlib.suppress(RuntimeError):
+            bpy.ops.ed.undo_push(message=f"AI: {name}")
 
-    if tool.get("pause"):
+    if tool["pause"]:
         return {"pending": True, "kind": "ask"}
-
     return {"ok": True, "result": str(result)}
 
 
-def execute_tool(name, arguments):
+def execute_tool(name: str, arguments: dict[str, Any]) -> str:
     """Run a gated tool after the user explicitly approved it (no re-gate)."""
-    outcome = dispatch(name, arguments, force=True)
-    return outcome.get("result", "")
-
-
-def execute_python(code):
-    """Execute generated code on the main thread (used after approval).
-
-    The code runs with bpy/bmesh/mathutils/math in scope; stdout is
-    captured and returned (truncated).
-    """
-    namespace = {
-        "bpy": bpy,
-        "bmesh": bmesh,
-        "mathutils": mathutils,
-        "math": math,
-        "textwrap": textwrap,
-    }
-    stdout = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(stdout):
-            exec(compile(code, "<blender_ai>", "exec"), namespace)  # noqa: S102
-        output = stdout.getvalue().strip()
-        return output[:_MAX_OUTPUT] or "OK (no output)"
-    except Exception as exc:  # noqa: BLE001 — errors go back to the model
-        output = stdout.getvalue().strip()
-        error = "%s: %s" % (type(exc).__name__, exc)
-        if output:
-            error = output[:500] + "\n" + error
-        return "ERROR: %s" % error
-
-
-# Register the run_python tool here (not in tools/) so the gate lives next
-# to its executor.
-def _run_python(code):
-    """(gate description only; execution goes through execute_python)"""
-    return execute_python(code)
-
-
-TOOL_REGISTRY["run_python"] = {
-    "schema": {
-        "type": "function",
-        "function": {
-            "name": "run_python",
-            "description": (
-                "Run arbitrary bpy Python code for anything the structural "
-                "tools cannot do. Keep the code short and readable; print "
-                "useful results. Runs on the main thread ONLY after the "
-                "user approves it in the panel."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {"type": "string",
-                             "description": "Python source using bpy/bmesh/mathutils"},
-                },
-                "required": ["code"],
-            },
-        },
-    },
-    "func": _run_python,
-    "approval": "code",
-    "pause": False,
-}
-
-
-def tools_schema():
-    return _tools_schema()
+    return str(dispatch(name, arguments, force=True).get("result", ""))

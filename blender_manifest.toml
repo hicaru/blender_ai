@@ -1,8 +1,8 @@
 schema_version = "1.0.0"
 id = "blender_ai"
-version = "0.1.14"
+version = "0.3.0"
 name = "Blender AI"
-tagline = "AI chat agent that builds 3D models inside Blender"
+tagline = "AI agent that builds 3D models for Bevy games inside Blender"
 maintainer = "hicaru"
 type = "add-on"
 blender_version_min = "5.2.0"
@@ -13,6 +13,7 @@ tags = ["3D View", "Modeling"]
 
 [permissions]
 network = "Sends chat requests to the configured LLM provider"
+files = "Reads images you attach and writes exported .glb files"
 
 [build]
 paths_exclude_pattern = [
@@ -23,4 +24,8 @@ paths_exclude_pattern = [
   ".git/",
   "*.zip",
   ".gitignore",
+  "pyproject.toml",
+  ".mypy_cache/",
+  ".ruff_cache/",
+  ".pytest_cache/",
 ]
