@@ -1,8 +1,9 @@
 """N-panel: pipeline, brief form, object inspector, chat, skills.
 # mypy: ignore-errors
 
-One Panel class with layout.panel() sub-sections (4.1+): simpler than six
-panel subclasses, and the open/closed state is persisted by Blender.
+One Panel class with layout.panel() sub-sections (Blender 5.x API:
+the call returns a (header, body) tuple): simpler than six panel
+subclasses, and the open/closed state is persisted by Blender.
 """
 
 import functools
@@ -121,8 +122,12 @@ class AI_PT_chat(bpy.types.Panel):
         self._draw_brief_section(layout, wm)
         self._draw_inspector_section(layout, context)
 
-        with layout.panel(idname="AI_PT_chat", default_closed=False):
-            self._draw_chat(layout, context, wm, width)
+        # Blender 5.x: layout.panel() returns (header, body); body is None
+        # while the panel is collapsed.
+        header, body = layout.panel(idname="AI_PT_chat", default_closed=False)
+        header.label(text="Chat")
+        if body is not None:
+            self._draw_chat(body, context, wm, width)
 
         self._draw_skills_section(layout, wm)
 
@@ -130,50 +135,51 @@ class AI_PT_chat(bpy.types.Panel):
 
     def _draw_pipeline_section(self, layout, context):
         wm = context.window_manager
-        with layout.panel(idname="AI_PT_pipeline", default_closed=False):
-            prefs = get_prefs()
-            provider = getattr(prefs, "provider", "?") if prefs else "?"
-            model = getattr(prefs, "model", "") if prefs else ""
-            row = layout.row(align=True)
-            row.label(text="%s · %s" % (provider, model or "no model"), icon='OUTLINER_OB_MESH')
-            row.operator("screen.userpref_show", text="", icon='PREFERENCES')
+        header, body = layout.panel(idname="AI_PT_pipeline", default_closed=False)
+        header.label(text="Pipeline")
+        prefs = get_prefs()
+        provider = getattr(prefs, "provider", "?") if prefs else "?"
+        model = getattr(prefs, "model", "") if prefs else ""
+        row = body.row(align=True)
+        row.label(text="%s · %s" % (provider, model or "no model"), icon='OUTLINER_OB_MESH')
+        row.operator("screen.userpref_show", text="", icon='PREFERENCES')
 
+        summary = None
+        try:
+            summary = _pipeline_summary()
+        except (RuntimeError, ValueError, KeyError, AttributeError):
             summary = None
-            try:
-                summary = _pipeline_summary()
-            except (RuntimeError, ValueError, KeyError, AttributeError):
-                summary = None
-            if summary is None:
-                layout.label(text="No active asset — set a brief below", icon='INFO')
-            else:
-                stage, stage_name, progress, fails, warns = summary
-                layout.progress(factor=progress, text="Stage %d/7 %s  %d%%"
-                                % (stage, stage_name, int(progress * 100)))
-                for check_item in fails:
-                    row = layout.row(align=True)
-                    row.alert = True
-                    row.label(text="✖ %s" % check_item.id, icon='CANCEL')
-                    props = row.operator(operators.AI_OT_fix_check.bl_idname, text="Fix")
-                    props.check_id = check_item.id
-                for check_item in warns:
-                    row = layout.row(align=True)
-                    row.label(text="⚠ %s" % check_item.id, icon='ERROR')
-                    props = row.operator(operators.AI_OT_fix_check.bl_idname, text="Fix")
-                    props.check_id = check_item.id
-            row = layout.row(align=True)
-            row.operator(operators.AI_OT_run_pipeline_action.bl_idname,
-                         text="Validate").action = 'validate'
-            row.operator(operators.AI_OT_run_pipeline_action.bl_idname,
-                         text="Capture").action = 'capture'
-            row2 = layout.row(align=True)
-            row2.operator(operators.AI_OT_run_pipeline_action.bl_idname,
-                          text="LODs").action = 'lods'
-            row2.operator(operators.AI_OT_run_pipeline_action.bl_idname,
-                          text="Collision").action = 'collision'
-            row3 = layout.row(align=True)
-            row3.operator(operators.AI_OT_run_pipeline_action.bl_idname,
-                          text="Export").action = 'export'
-            self._draw_capture_thumbnail(layout, wm)
+        if summary is None:
+            body.label(text="No active asset — set a brief below", icon='INFO')
+        else:
+            stage, stage_name, progress, fails, warns = summary
+            body.progress(factor=progress, text="Stage %d/7 %s  %d%%"
+                          % (stage, stage_name, int(progress * 100)))
+            for check_item in fails:
+                row = body.row(align=True)
+                row.alert = True
+                row.label(text="✖ %s" % check_item.id, icon='CANCEL')
+                props = row.operator(operators.AI_OT_fix_check.bl_idname, text="Fix")
+                props.check_id = check_item.id
+            for check_item in warns:
+                row = body.row(align=True)
+                row.label(text="⚠ %s" % check_item.id, icon='ERROR')
+                props = row.operator(operators.AI_OT_fix_check.bl_idname, text="Fix")
+                props.check_id = check_item.id
+        row = body.row(align=True)
+        row.operator(operators.AI_OT_run_pipeline_action.bl_idname,
+                     text="Validate").action = 'validate'
+        row.operator(operators.AI_OT_run_pipeline_action.bl_idname,
+                     text="Capture").action = 'capture'
+        row2 = body.row(align=True)
+        row2.operator(operators.AI_OT_run_pipeline_action.bl_idname,
+                      text="LODs").action = 'lods'
+        row2.operator(operators.AI_OT_run_pipeline_action.bl_idname,
+                      text="Collision").action = 'collision'
+        row3 = body.row(align=True)
+        row3.operator(operators.AI_OT_run_pipeline_action.bl_idname,
+                      text="Export").action = 'export'
+        AI_PT_chat._draw_capture_thumbnail(body, wm)
 
     @staticmethod
     def _draw_capture_thumbnail(layout, wm) -> None:
@@ -195,39 +201,45 @@ class AI_PT_chat(bpy.types.Panel):
 
     def _draw_brief_section(self, layout, wm):
         has_asset = bool(bpy.context.scene.get("blender_ai_active_asset"))
-        with layout.panel(idname="AI_PT_brief", default_closed=has_asset):
-            layout.prop(wm, "blender_ai_brief_name")
-            layout.prop(wm, "blender_ai_brief_desc")
-            col = layout.column(align=True)
-            col.prop(wm, "blender_ai_brief_class")
-            col.prop(wm, "blender_ai_brief_engine")
-            col.prop(wm, "blender_ai_brief_style")
-            col.prop(wm, "blender_ai_brief_colors")
-            layout.prop(wm, "blender_ai_brief_size")
-            layout.operator(operators.AI_OT_apply_brief.bl_idname, icon='CHECKMARK')
+        header, body = layout.panel(idname="AI_PT_brief", default_closed=has_asset)
+        header.label(text="Brief")
+        if body is None:
+            return
+        body.prop(wm, "blender_ai_brief_name")
+        body.prop(wm, "blender_ai_brief_desc")
+        col = body.column(align=True)
+        col.prop(wm, "blender_ai_brief_class")
+        col.prop(wm, "blender_ai_brief_engine")
+        col.prop(wm, "blender_ai_brief_style")
+        col.prop(wm, "blender_ai_brief_colors")
+        body.prop(wm, "blender_ai_brief_size")
+        body.operator(operators.AI_OT_apply_brief.bl_idname, icon='CHECKMARK')
 
     def _draw_inspector_section(self, layout, context):
         obj = context.active_object
-        with layout.panel(idname="AI_PT_inspector", default_closed=True):
-            if obj is None:
-                layout.label(text="No active object", icon='RESTRICT_SELECT_ON')
-                return
-            layout.label(text=obj.name, icon='OBJECT_DATAMODE')
-            layout.prop(obj, "color")
-            if obj.type == 'MESH':
-                # DRAW-SAFE: never calc_loop_triangles() here (it writes the
-                # evaluated triangulation to the mesh); show the cached count
-                # or fall back to the live face count.
-                tris = len(obj.data.loop_triangles)
-                faces = len(obj.data.polygons)
-                dims = " x ".join("%.2f" % d for d in obj.dimensions)
-                detail = (f"{tris} tris x {dims} m" if tris
-                          else f"{faces} faces x {dims} m")
-                layout.label(text=detail)
-                layout.prop(obj, '["ai_role"]')
-            layout.prop(context.window_manager, "blender_ai_obj_desc")
-            row = layout.row(align=True)
-            row.operator(operators.AI_OT_random_color.bl_idname, icon='COLOR')
+        header, body = layout.panel(idname="AI_PT_inspector", default_closed=True)
+        header.label(text="Inspector")
+        if body is None:
+            return
+        if obj is None:
+            body.label(text="No active object", icon='RESTRICT_SELECT_ON')
+            return
+        body.label(text=obj.name, icon='OBJECT_DATAMODE')
+        body.prop(obj, "color")
+        if obj.type == 'MESH':
+            # DRAW-SAFE: never calc_loop_triangles() here (it writes the
+            # evaluated triangulation to the mesh); show the cached count
+            # or fall back to the live face count.
+            tris = len(obj.data.loop_triangles)
+            faces = len(obj.data.polygons)
+            dims = " x ".join("%.2f" % d for d in obj.dimensions)
+            detail = (f"{tris} tris x {dims} m" if tris
+                      else f"{faces} faces x {dims} m")
+            body.label(text=detail)
+            body.prop(obj, '["ai_role"]')
+        body.prop(context.window_manager, "blender_ai_obj_desc")
+        row = body.row(align=True)
+        row.operator(operators.AI_OT_random_color.bl_idname, icon='COLOR')
 
     def _draw_chat(self, layout, context, wm, width):
         # Messages (long ones collapse; runs of tool messages render as
@@ -336,27 +348,29 @@ class AI_PT_chat(bpy.types.Panel):
         self._draw_loop_section(layout)
 
     def _draw_skills_section(self, layout, wm):
-        with layout.panel(idname="AI_PT_skills", default_closed=True):
-            try:
-                index = _skills_snapshot()
-            except (OSError, ValueError):
-                index = None
-            if index is None:
-                layout.label(text="Skills unavailable", icon='ERROR')
-                return
-            layout.label(text="%d built-in skills"
-                         % len(index.skills), icon='BOOK')
-            for err in index.errors[:3]:
-                layout.label(text=err[:60], icon='ERROR', alert=True)
-            box = layout.box()
-            for skill in index.skills:
-                box.label(text="%s — %s" % (skill.name,
-                                            skill.description[:44]),
-                          text_ctxt="", translate=False)
-            row = layout.row(align=True)
-            row.operator(operators.AI_OT_reload_skills.bl_idname, icon='FILE_REFRESH')
-            row.operator(operators.AI_OT_open_skills_dir.bl_idname,
-                         text="", icon='FILE_FOLDER')
+        header, body = layout.panel(idname="AI_PT_skills", default_closed=True)
+        header.label(text="Skills")
+        try:
+            index = _skills_snapshot()
+        except (OSError, ValueError):
+            index = None
+        if body is None or index is None:
+            return
+            body.label(text="Skills unavailable", icon='ERROR')
+            return
+        body.label(text="%d built-in skills"
+                   % len(index.skills), icon='BOOK')
+        for err in index.errors[:3]:
+            body.label(text=err[:60], icon='ERROR', alert=True)
+        box = body.box()
+        for skill in index.skills:
+            box.label(text="%s — %s" % (skill.name,
+                                        skill.description[:44]),
+                      text_ctxt="", translate=False)
+        row = body.row(align=True)
+        row.operator(operators.AI_OT_reload_skills.bl_idname, icon='FILE_REFRESH')
+        row.operator(operators.AI_OT_open_skills_dir.bl_idname,
+                     text="", icon='FILE_FOLDER')
 
     def _draw_loop_section(self, layout):
         """Repair-loop state + record, read straight from the store dir."""
